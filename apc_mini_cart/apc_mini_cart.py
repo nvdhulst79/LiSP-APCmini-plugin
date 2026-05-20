@@ -1,7 +1,10 @@
 import logging
 
+import mido
+
 from lisp.core.plugin import Plugin
 from lisp.core.signal import Connection
+from lisp.cues.cue import CueState
 from lisp.plugins import get_plugin
 from lisp.plugins.cart_layout.layout import CartLayout
 
@@ -9,6 +12,40 @@ logger = logging.getLogger(__name__)
 
 APC_GRID_NOTES = range(0, 64)
 APC_CHANNEL = 0
+
+# APC mk2 LED behavior nibbles (Note-On channel).
+BEHAVIOR_DIM = 0          # 10% solid
+BEHAVIOR_FULL = 6         # 100% solid
+BEHAVIOR_PULSE_QUARTER = 9   # pulse 1/4
+BEHAVIOR_BLINK_SIXTEENTH = 12  # blink 1/16
+
+# APC mk2 palette indices (Note-On velocity).
+COLOR_OFF = 0
+COLOR_WHITE = 3
+COLOR_RED = 5
+COLOR_YELLOW = 13
+COLOR_GREEN = 87
+
+LED_OFF = (BEHAVIOR_DIM, COLOR_OFF)
+LED_IDLE = (BEHAVIOR_DIM, COLOR_WHITE)
+LED_RUNNING = (BEHAVIOR_FULL, COLOR_GREEN)
+LED_PAUSED = (BEHAVIOR_PULSE_QUARTER, COLOR_YELLOW)
+LED_ERROR = (BEHAVIOR_BLINK_SIXTEENTH, COLOR_RED)
+
+
+def _pad_to_note(row, col):
+    return (7 - row) * 8 + col
+
+
+def _led_for_cue(cue):
+    state = cue.state
+    if state & CueState.Error:
+        return LED_ERROR
+    if state & CueState.IsPaused:
+        return LED_PAUSED
+    if state & CueState.IsRunning:
+        return LED_RUNNING
+    return LED_IDLE
 
 
 class ApcMiniCart(Plugin):
@@ -21,6 +58,8 @@ class ApcMiniCart(Plugin):
         super().__init__(app)
         self._midi = get_plugin("Midi")
         self._active = False
+        self._cue_to_pad = {}  # id(cue) -> (row, col)
+        self._tracked_cues = []  # keep refs alive; Signal uses weakrefs
 
         self.app.session_created.connect(
             self._on_session_change, Connection.QtQueued
@@ -31,6 +70,8 @@ class ApcMiniCart(Plugin):
         self.app.session_before_finalize.connect(
             self._on_session_finalize, Connection.QtQueued
         )
+
+    # ---- session / layout lifecycle ------------------------------------
 
     def _on_session_change(self, *_):
         if isinstance(self.app.layout, CartLayout):
@@ -44,18 +85,41 @@ class ApcMiniCart(Plugin):
     def _activate(self):
         if self._active:
             return
+        self._active = True
         self._midi.input.new_message.connect(
             self._on_midi_message, Connection.QtQueued
         )
-        self._active = True
+        model = self.app.layout.model
+        model.item_added.connect(self._on_model_changed, Connection.QtQueued)
+        model.item_removed.connect(self._on_model_changed, Connection.QtQueued)
+        model.item_moved.connect(self._on_model_changed, Connection.QtQueued)
+        model.model_reset.connect(self._on_model_changed, Connection.QtQueued)
+        self.app.layout.view.currentChanged.connect(self._on_page_changed)
+        self._rebind_current_page()
         logger.info("APC Mini Cart: activated (Cart Layout detected).")
 
     def _deactivate(self):
         if not self._active:
             return
+        self._unbind_cues()
+        try:
+            self.app.layout.view.currentChanged.disconnect(
+                self._on_page_changed
+            )
+        except (TypeError, RuntimeError):
+            pass  # view may already be gone during teardown
+        model = self.app.layout.model
+        for signal in (
+            model.item_added, model.item_removed,
+            model.item_moved, model.model_reset,
+        ):
+            signal.disconnect(self._on_model_changed)
         self._midi.input.new_message.disconnect(self._on_midi_message)
+        self._clear_all_pads()
         self._active = False
         logger.info("APC Mini Cart: deactivated.")
+
+    # ---- inbound: pad press -> cue.execute -----------------------------
 
     def _on_midi_message(self, message):
         if message.type != "note_on":
@@ -65,8 +129,6 @@ class ApcMiniCart(Plugin):
         if message.note not in APC_GRID_NOTES:
             return
 
-        # APC pad note 0 is bottom-left, count rises left-to-right, bottom-up.
-        # Cart Layout indexes (0, 0) as top-left.
         row = 7 - (message.note // 8)
         col = message.note % 8
         page = self.app.layout.current_page()
@@ -85,3 +147,74 @@ class ApcMiniCart(Plugin):
             cue.name, page, row, col,
         )
         cue.execute()
+
+    # ---- outbound: LED feedback ----------------------------------------
+
+    def _on_page_changed(self, _index):
+        self._rebind_current_page()
+
+    def _on_model_changed(self, *_):
+        self._rebind_current_page()
+
+    def _rebind_current_page(self):
+        self._unbind_cues()
+        self._clear_all_pads()
+        page = self.app.layout.current_page()
+        model = self.app.layout.model
+        for row in range(8):
+            for col in range(8):
+                try:
+                    cue = model.item((page, row, col))
+                except IndexError:
+                    continue
+                self._bind_cue(cue, row, col)
+                self._paint_cue(cue)
+
+    def _bind_cue(self, cue, row, col):
+        self._cue_to_pad[id(cue)] = (row, col)
+        self._tracked_cues.append(cue)
+        for signal in (
+            cue.started, cue.stopped, cue.paused,
+            cue.error, cue.end, cue.interrupted,
+        ):
+            signal.connect(self._on_cue_state_changed, Connection.QtQueued)
+
+    def _unbind_cues(self):
+        for cue in self._tracked_cues:
+            for signal in (
+                cue.started, cue.stopped, cue.paused,
+                cue.error, cue.end, cue.interrupted,
+            ):
+                try:
+                    signal.disconnect(self._on_cue_state_changed)
+                except Exception:
+                    pass
+        self._tracked_cues.clear()
+        self._cue_to_pad.clear()
+
+    def _on_cue_state_changed(self, cue):
+        if id(cue) in self._cue_to_pad:
+            self._paint_cue(cue)
+
+    def _paint_cue(self, cue):
+        pad = self._cue_to_pad.get(id(cue))
+        if pad is None:
+            return
+        row, col = pad
+        behavior, color = _led_for_cue(cue)
+        self._send_pad(_pad_to_note(row, col), behavior, color)
+
+    def _clear_all_pads(self):
+        behavior, color = LED_OFF
+        for note in APC_GRID_NOTES:
+            self._send_pad(note, behavior, color)
+
+    def _send_pad(self, note, behavior, color):
+        try:
+            self._midi.output.send(
+                mido.Message(
+                    "note_on", channel=behavior, note=note, velocity=color,
+                )
+            )
+        except Exception:
+            logger.exception("APC Mini Cart: failed to send pad LED.")

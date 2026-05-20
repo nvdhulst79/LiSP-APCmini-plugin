@@ -12,7 +12,15 @@
       "Read(//home/niels/dev/linux-show-player/lisp/**)",
       "Read(//home/niels/dev/linux-show-player/**)",
       "Bash(python3 -c ' *)",
-      "Bash(poetry run python -c ' *)"
+      "Bash(poetry run python -c ' *)",
+      "Bash(poetry run python3 -c ' *)",
+      "Bash(/home/niels/.cache/pypoetry/virtualenvs/linux-show-player-2C36I8qN-py3.12/bin/python -c ' *)",
+      "Bash(cd \"/mnt/secundo/Projects/Toneel/LiSP APCmini plugin\" && git remote -v; echo ---; git log --oneline -5; echo ---; cat /etc/os-release 2>/dev/null | head -5)",
+      "Read(//usr/lib/**)",
+      "Bash(chmod +x \"/mnt/secundo/Projects/Toneel/LiSP APCmini plugin/deploy/install.sh\")",
+      "Bash(bash -n \"/mnt/secundo/Projects/Toneel/LiSP APCmini plugin/deploy/install.sh\")",
+      "Bash(git check-ignore *)",
+      "Bash(git rm *)"
     ]
   }
 }
