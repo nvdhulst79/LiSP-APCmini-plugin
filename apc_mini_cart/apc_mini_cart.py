@@ -1,4 +1,5 @@
 import logging
+from threading import Thread
 
 import mido
 from PyQt5.QtCore import QTimer
@@ -17,6 +18,7 @@ from .settings import (
     ApcMiniCartSettings,
     DEFAULT_BRIGHTNESS,
     DEFAULT_COLORS,
+    TRIGGER_MODE_DEFAULT,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,8 +58,9 @@ class ApcMiniCart(Plugin):
         self._cue_to_pad = {}     # id(cue) -> (row, col)
         self._tracked_cues = []   # keep refs alive; Signal uses weakrefs
 
-        # Per-cue setting: pad idle color override. None = use global default.
+        # Per-cue settings. None = "use the plugin-wide default".
         Cue.apc_idle_color = Property(default=None)
+        Cue.apc_trigger_mode = Property(default=None)
 
         AppConfigurationDialog.registerSettingsPage(
             "plugins.apc_mini_cart",
@@ -141,11 +144,35 @@ class ApcMiniCart(Plugin):
             )
             return
 
+        mode = self._trigger_mode_for(cue)
         logger.debug(
-            "APC Mini Cart: firing cue %r at (page=%d, row=%d, col=%d).",
-            cue.name, page, row, col,
+            "APC Mini Cart: firing cue %r at (page=%d, row=%d, col=%d) mode=%s.",
+            cue.name, page, row, col, mode,
         )
-        cue.execute()
+        if mode == "retrigger":
+            self._retrigger(cue)
+        else:
+            cue.execute()
+
+    @staticmethod
+    def _retrigger(cue):
+        # cue.interrupt() and cue.start() are both @async_function in LiSP —
+        # each spawns its own thread and returns immediately. Calling them
+        # back-to-back races: start() often wins the state lock first, sees
+        # the cue is still running, and silently returns. We bypass the
+        # decorator (via __wrapped__) and run both bodies sequentially on
+        # one thread so the interrupt always finishes before start runs.
+        cls = type(cue)
+        def task():
+            cls.interrupt.__wrapped__(cue)
+            cls.start.__wrapped__(cue)
+        Thread(target=task, name=f"apc-retrigger-{id(cue):x}", daemon=True).start()
+
+    def _trigger_mode_for(self, cue):
+        per_cue = getattr(cue, "apc_trigger_mode", None)
+        if per_cue:
+            return per_cue
+        return self.Config.get("trigger_mode", TRIGGER_MODE_DEFAULT)
 
     # ---- outbound: LED feedback ----------------------------------------
 

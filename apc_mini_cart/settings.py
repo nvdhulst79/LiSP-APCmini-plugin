@@ -181,6 +181,8 @@ class ApcMiniCartSettings(SettingsPage):
         self.runningLabel.setText(translate("ApcMiniCart", "Running:"))
         self.pausedLabel.setText(translate("ApcMiniCart", "Paused:"))
         self.errorLabel.setText(translate("ApcMiniCart", "Error:"))
+        self.behaviorGroup.setTitle(translate("ApcMiniCart", "Pad press behavior"))
+        self.triggerModeLabel.setText(translate("ApcMiniCart", "Default action:"))
         self.brightnessGroup.setTitle(translate("ApcMiniCart", "Brightness"))
         self.idleBrightnessLabel.setText(translate("ApcMiniCart", "Idle:"))
         self.runningBrightnessLabel.setText(translate("ApcMiniCart", "Running:"))
@@ -204,6 +206,11 @@ class ApcMiniCartSettings(SettingsPage):
         _select_combo_value(self.pausedCombo, colors.get("paused", DEFAULT_COLORS["paused"]))
         _select_combo_value(self.errorCombo, colors.get("error", DEFAULT_COLORS["error"]))
 
+        _select_combo_value(
+            self.triggerModeCombo,
+            (settings or {}).get("trigger_mode", TRIGGER_MODE_DEFAULT),
+        )
+
         brightness = settings.get("brightness", {}) if settings else {}
         self.idleBrightnessSlider.setValue(brightness.get("idle", DEFAULT_BRIGHTNESS["idle"]))
         self.runningBrightnessSlider.setValue(brightness.get("running", DEFAULT_BRIGHTNESS["running"]))
@@ -224,6 +231,7 @@ class ApcMiniCartSettings(SettingsPage):
                 "idle": self.idleBrightnessSlider.value(),
                 "running": self.runningBrightnessSlider.value(),
             },
+            "trigger_mode": self.triggerModeCombo.currentData(),
         }
 
     def _on_identify_clicked(self):
@@ -252,6 +260,10 @@ class ApcMiniCartCueSettings(SettingsPage):
         self.colorCombo = _build_color_combo(self.group, PALETTE_CHOICES)
         self.group.layout().addRow(self.colorLabel, self.colorCombo)
 
+        self.triggerModeLabel = QLabel()
+        self.triggerModeCombo = _build_color_combo(self.group, CUE_TRIGGER_MODE_CHOICES)
+        self.group.layout().addRow(self.triggerModeLabel, self.triggerModeCombo)
+
         self.hint = QLabel(self)
         self.hint.setWordWrap(True)
         self.layout().addWidget(self.hint)
@@ -259,11 +271,13 @@ class ApcMiniCartCueSettings(SettingsPage):
         self.retranslateUi()
 
     def retranslateUi(self):
-        self.group.setTitle(translate("ApcMiniCart", "Pad appearance"))
+        self.group.setTitle(translate("ApcMiniCart", "Pad behavior"))
         self.colorLabel.setText(translate("ApcMiniCart", "Idle color:"))
+        self.triggerModeLabel.setText(translate("ApcMiniCart", "Pad action:"))
         self.hint.setText(translate(
             "ApcMiniCart",
-            "Overrides the pad's idle color while this cue is stopped. "
+            "Idle color overrides the global idle color while this cue is stopped. "
+            "Pad action overrides the global pad-press behavior for this cue. "
             "Running / paused / error use the plugin's global colors.",
         ))
 
@@ -272,8 +286,12 @@ class ApcMiniCartCueSettings(SettingsPage):
 
     def loadSettings(self, settings):
         _select_combo_value(self.colorCombo, settings.get("apc_idle_color"))
+        _select_combo_value(self.triggerModeCombo, settings.get("apc_trigger_mode"))
 
     def getSettings(self):
         if not self.isGroupEnabled(self.group):
             return {}
-        return {"apc_idle_color": self.colorCombo.currentData()}
+        return {
+            "apc_idle_color": self.colorCombo.currentData(),
+            "apc_trigger_mode": self.triggerModeCombo.currentData(),
+        }

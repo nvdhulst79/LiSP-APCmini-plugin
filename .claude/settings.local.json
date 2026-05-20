@@ -20,7 +20,9 @@
       "Bash(chmod +x \"/mnt/secundo/Projects/Toneel/LiSP APCmini plugin/deploy/install.sh\")",
       "Bash(bash -n \"/mnt/secundo/Projects/Toneel/LiSP APCmini plugin/deploy/install.sh\")",
       "Bash(git check-ignore *)",
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "Bash(cat ~/.config/LinuxShowPlayer/0.6/apc_mini_cart.json 2>&1)",
+      "Read(//home/niels/.config/LinuxShowPlayer/0.6/**)"
     ]
   }
 }
