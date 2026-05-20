@@ -15,6 +15,7 @@ from lisp.ui.settings.cue_settings import CueSettingsRegistry
 from .settings import (
     ApcMiniCartCueSettings,
     ApcMiniCartSettings,
+    DEFAULT_BRIGHTNESS,
     DEFAULT_COLORS,
 )
 
@@ -226,13 +227,16 @@ class ApcMiniCart(Plugin):
         if state & CueState.IsPaused:
             return (BEHAVIOR_PULSE_QUARTER, self._color("paused"))
         if state & CueState.IsRunning:
-            return (BEHAVIOR_FULL, self._color("running"))
+            return (self._brightness("running"), self._color("running"))
         per_cue = getattr(cue, "apc_idle_color", None)
         idle = per_cue if per_cue is not None else self._color("idle")
-        return (BEHAVIOR_DIM, idle)
+        return (self._brightness("idle"), idle)
 
     def _color(self, key):
         return self.Config.get(f"colors.{key}", DEFAULT_COLORS[key])
+
+    def _brightness(self, key):
+        return self.Config.get(f"brightness.{key}", DEFAULT_BRIGHTNESS[key])
 
     def _clear_all_pads(self):
         behavior, color = LED_OFF

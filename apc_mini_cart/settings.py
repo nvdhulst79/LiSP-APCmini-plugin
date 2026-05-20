@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSlider,
     QVBoxLayout,
 )
 
@@ -37,6 +38,33 @@ DEFAULT_COLORS = {
     "error": 5,     # red
 }
 
+# APC mk2 solid-brightness nibbles (Note-On channel 0-6). Used for idle
+# and running states; paused (pulse) and error (blink) live on different
+# behavior nibbles whose brightness is fixed by the firmware.
+# Slider position == nibble; the label at that index is what we show.
+BRIGHTNESS_LABELS = ["10%", "25%", "50%", "65%", "75%", "90%", "100%"]
+
+DEFAULT_BRIGHTNESS = {
+    "idle": 0,     # 10%
+    "running": 6,  # 100%
+}
+
+# What happens when a pad is pressed for a cue that is already running.
+#   "toggle"    -> cue.execute() (LiSP's native: start if stopped, stop if running)
+#   "retrigger" -> interrupt + start (always play from the beginning)
+TRIGGER_MODE_DEFAULT = "retrigger"
+
+GLOBAL_TRIGGER_MODE_CHOICES = [
+    ("Retrigger (restart from beginning)", "retrigger"),
+    ("Toggle (press again to stop)", "toggle"),
+]
+
+CUE_TRIGGER_MODE_CHOICES = [
+    ("Use default", None),
+    ("Retrigger (restart from beginning)", "retrigger"),
+    ("Toggle (press again to stop)", "toggle"),
+]
+
 
 def _build_color_combo(parent, choices):
     combo = QComboBox(parent)
@@ -48,6 +76,28 @@ def _build_color_combo(parent, choices):
 def _select_combo_value(combo, value):
     idx = combo.findData(value)
     combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+
+def _build_brightness_row(parent):
+    """Returns (row_layout, slider, value_label)."""
+    slider = QSlider(Qt.Horizontal, parent)
+    slider.setRange(0, len(BRIGHTNESS_LABELS) - 1)
+    slider.setSingleStep(1)
+    slider.setPageStep(1)
+    slider.setTickPosition(QSlider.TicksBelow)
+    slider.setTickInterval(1)
+
+    value_label = QLabel(parent)
+    value_label.setMinimumWidth(40)
+    value_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+    slider.valueChanged.connect(
+        lambda v: value_label.setText(BRIGHTNESS_LABELS[v])
+    )
+
+    row = QHBoxLayout()
+    row.addWidget(slider, stretch=1)
+    row.addWidget(value_label)
+    return row, slider, value_label
 
 
 class ApcMiniCartSettings(SettingsPage):
@@ -80,6 +130,37 @@ class ApcMiniCartSettings(SettingsPage):
         form.addRow(self.pausedLabel, self.pausedCombo)
         form.addRow(self.errorLabel, self.errorCombo)
 
+        self.behaviorGroup = QGroupBox(self)
+        self.behaviorGroup.setLayout(QFormLayout())
+        self.layout().addWidget(self.behaviorGroup)
+
+        self.triggerModeCombo = _build_color_combo(
+            self.behaviorGroup, GLOBAL_TRIGGER_MODE_CHOICES
+        )
+        self.triggerModeLabel = QLabel()
+        self.behaviorGroup.layout().addRow(self.triggerModeLabel, self.triggerModeCombo)
+
+        self.brightnessGroup = QGroupBox(self)
+        self.brightnessGroup.setLayout(QFormLayout())
+        self.layout().addWidget(self.brightnessGroup)
+
+        idleRow, self.idleBrightnessSlider, self.idleBrightnessValue = (
+            _build_brightness_row(self.brightnessGroup)
+        )
+        runningRow, self.runningBrightnessSlider, self.runningBrightnessValue = (
+            _build_brightness_row(self.brightnessGroup)
+        )
+
+        self.idleBrightnessLabel = QLabel()
+        self.runningBrightnessLabel = QLabel()
+        self.brightnessHint = QLabel()
+        self.brightnessHint.setWordWrap(True)
+
+        bform = self.brightnessGroup.layout()
+        bform.addRow(self.idleBrightnessLabel, idleRow)
+        bform.addRow(self.runningBrightnessLabel, runningRow)
+        bform.addRow(self.brightnessHint)
+
         self.identifyGroup = QGroupBox(self)
         self.identifyGroup.setLayout(QHBoxLayout())
         self.layout().addWidget(self.identifyGroup)
@@ -100,6 +181,14 @@ class ApcMiniCartSettings(SettingsPage):
         self.runningLabel.setText(translate("ApcMiniCart", "Running:"))
         self.pausedLabel.setText(translate("ApcMiniCart", "Paused:"))
         self.errorLabel.setText(translate("ApcMiniCart", "Error:"))
+        self.brightnessGroup.setTitle(translate("ApcMiniCart", "Brightness"))
+        self.idleBrightnessLabel.setText(translate("ApcMiniCart", "Idle:"))
+        self.runningBrightnessLabel.setText(translate("ApcMiniCart", "Running:"))
+        self.brightnessHint.setText(translate(
+            "ApcMiniCart",
+            "Paused (pulse) and error (blink) use the device's built-in "
+            "animations — their brightness is fixed by the hardware.",
+        ))
         self.identifyGroup.setTitle(translate("ApcMiniCart", "Hardware check"))
         self.identifyButton.setText(translate("ApcMiniCart", "Flash grid"))
         self.identifyHint.setText(translate(
@@ -115,6 +204,14 @@ class ApcMiniCartSettings(SettingsPage):
         _select_combo_value(self.pausedCombo, colors.get("paused", DEFAULT_COLORS["paused"]))
         _select_combo_value(self.errorCombo, colors.get("error", DEFAULT_COLORS["error"]))
 
+        brightness = settings.get("brightness", {}) if settings else {}
+        self.idleBrightnessSlider.setValue(brightness.get("idle", DEFAULT_BRIGHTNESS["idle"]))
+        self.runningBrightnessSlider.setValue(brightness.get("running", DEFAULT_BRIGHTNESS["running"]))
+        # Force value-label refresh in case the slider was already at the loaded value
+        # (valueChanged only fires when the value actually changes).
+        self.idleBrightnessValue.setText(BRIGHTNESS_LABELS[self.idleBrightnessSlider.value()])
+        self.runningBrightnessValue.setText(BRIGHTNESS_LABELS[self.runningBrightnessSlider.value()])
+
     def getSettings(self):
         return {
             "colors": {
@@ -122,6 +219,10 @@ class ApcMiniCartSettings(SettingsPage):
                 "running": self.runningCombo.currentData(),
                 "paused": self.pausedCombo.currentData(),
                 "error": self.errorCombo.currentData(),
+            },
+            "brightness": {
+                "idle": self.idleBrightnessSlider.value(),
+                "running": self.runningBrightnessSlider.value(),
             },
         }
 

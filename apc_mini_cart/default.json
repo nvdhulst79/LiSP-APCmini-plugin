@@ -1,10 +1,14 @@
 {
-  "_version_": "0.2",
+  "_version_": "0.3",
   "_enabled_": true,
   "colors": {
     "idle": 3,
     "running": 87,
     "paused": 13,
     "error": 5
+  },
+  "brightness": {
+    "idle": 0,
+    "running": 6
   }
 }
