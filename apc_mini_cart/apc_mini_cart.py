@@ -1,12 +1,22 @@
 import logging
 
 import mido
+from PyQt5.QtCore import QTimer
 
 from lisp.core.plugin import Plugin
+from lisp.core.properties import Property
 from lisp.core.signal import Connection
-from lisp.cues.cue import CueState
+from lisp.cues.cue import Cue, CueState
 from lisp.plugins import get_plugin
 from lisp.plugins.cart_layout.layout import CartLayout
+from lisp.ui.settings.app_configuration import AppConfigurationDialog
+from lisp.ui.settings.cue_settings import CueSettingsRegistry
+
+from .settings import (
+    ApcMiniCartCueSettings,
+    ApcMiniCartSettings,
+    DEFAULT_COLORS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -14,38 +24,21 @@ APC_GRID_NOTES = range(0, 64)
 APC_CHANNEL = 0
 
 # APC mk2 LED behavior nibbles (Note-On channel).
-BEHAVIOR_DIM = 0          # 10% solid
-BEHAVIOR_FULL = 6         # 100% solid
-BEHAVIOR_PULSE_QUARTER = 9   # pulse 1/4
+BEHAVIOR_DIM = 0               # 10% solid
+BEHAVIOR_FULL = 6              # 100% solid
+BEHAVIOR_PULSE_QUARTER = 9     # pulse 1/4
 BEHAVIOR_BLINK_SIXTEENTH = 12  # blink 1/16
 
-# APC mk2 palette indices (Note-On velocity).
 COLOR_OFF = 0
 COLOR_WHITE = 3
-COLOR_RED = 5
-COLOR_YELLOW = 13
-COLOR_GREEN = 87
 
 LED_OFF = (BEHAVIOR_DIM, COLOR_OFF)
-LED_IDLE = (BEHAVIOR_DIM, COLOR_WHITE)
-LED_RUNNING = (BEHAVIOR_FULL, COLOR_GREEN)
-LED_PAUSED = (BEHAVIOR_PULSE_QUARTER, COLOR_YELLOW)
-LED_ERROR = (BEHAVIOR_BLINK_SIXTEENTH, COLOR_RED)
+
+IDENTIFY_MS = 1000
 
 
 def _pad_to_note(row, col):
     return (7 - row) * 8 + col
-
-
-def _led_for_cue(cue):
-    state = cue.state
-    if state & CueState.Error:
-        return LED_ERROR
-    if state & CueState.IsPaused:
-        return LED_PAUSED
-    if state & CueState.IsRunning:
-        return LED_RUNNING
-    return LED_IDLE
 
 
 class ApcMiniCart(Plugin):
@@ -58,18 +51,27 @@ class ApcMiniCart(Plugin):
         super().__init__(app)
         self._midi = get_plugin("Midi")
         self._active = False
-        self._cue_to_pad = {}  # id(cue) -> (row, col)
-        self._tracked_cues = []  # keep refs alive; Signal uses weakrefs
+        self._identify_active = False
+        self._cue_to_pad = {}     # id(cue) -> (row, col)
+        self._tracked_cues = []   # keep refs alive; Signal uses weakrefs
 
-        self.app.session_created.connect(
-            self._on_session_change, Connection.QtQueued
+        # Per-cue setting: pad idle color override. None = use global default.
+        Cue.apc_idle_color = Property(default=None)
+
+        AppConfigurationDialog.registerSettingsPage(
+            "plugins.apc_mini_cart",
+            ApcMiniCartSettings,
+            ApcMiniCart.Config,
         )
-        self.app.session_loaded.connect(
-            self._on_session_change, Connection.QtQueued
-        )
-        self.app.session_before_finalize.connect(
-            self._on_session_finalize, Connection.QtQueued
-        )
+        CueSettingsRegistry().add(ApcMiniCartCueSettings)
+
+        self.app.session_created.connect(self._on_session_change, Connection.QtQueued)
+        self.app.session_loaded.connect(self._on_session_change, Connection.QtQueued)
+        self.app.session_before_finalize.connect(self._on_session_finalize, Connection.QtQueued)
+
+        # Repaint when the user changes default colors in Preferences.
+        ApcMiniCart.Config.changed.connect(self._on_config_changed)
+        ApcMiniCart.Config.updated.connect(self._on_config_changed)
 
     # ---- session / layout lifecycle ------------------------------------
 
@@ -86,9 +88,7 @@ class ApcMiniCart(Plugin):
         if self._active:
             return
         self._active = True
-        self._midi.input.new_message.connect(
-            self._on_midi_message, Connection.QtQueued
-        )
+        self._midi.input.new_message.connect(self._on_midi_message, Connection.QtQueued)
         model = self.app.layout.model
         model.item_added.connect(self._on_model_changed, Connection.QtQueued)
         model.item_removed.connect(self._on_model_changed, Connection.QtQueued)
@@ -103,11 +103,9 @@ class ApcMiniCart(Plugin):
             return
         self._unbind_cues()
         try:
-            self.app.layout.view.currentChanged.disconnect(
-                self._on_page_changed
-            )
+            self.app.layout.view.currentChanged.disconnect(self._on_page_changed)
         except (TypeError, RuntimeError):
-            pass  # view may already be gone during teardown
+            pass
         model = self.app.layout.model
         for signal in (
             model.item_added, model.item_removed,
@@ -156,7 +154,13 @@ class ApcMiniCart(Plugin):
     def _on_model_changed(self, *_):
         self._rebind_current_page()
 
+    def _on_config_changed(self, *_):
+        if self._active and not self._identify_active:
+            self._rebind_current_page()
+
     def _rebind_current_page(self):
+        if self._identify_active:
+            return
         self._unbind_cues()
         self._clear_all_pads()
         page = self.app.layout.current_page()
@@ -178,6 +182,7 @@ class ApcMiniCart(Plugin):
             cue.error, cue.end, cue.interrupted,
         ):
             signal.connect(self._on_cue_state_changed, Connection.QtQueued)
+        cue.property_changed.connect(self._on_cue_property_changed, Connection.QtQueued)
 
     def _unbind_cues(self):
         for cue in self._tracked_cues:
@@ -189,6 +194,10 @@ class ApcMiniCart(Plugin):
                     signal.disconnect(self._on_cue_state_changed)
                 except Exception:
                     pass
+            try:
+                cue.property_changed.disconnect(self._on_cue_property_changed)
+            except Exception:
+                pass
         self._tracked_cues.clear()
         self._cue_to_pad.clear()
 
@@ -196,13 +205,34 @@ class ApcMiniCart(Plugin):
         if id(cue) in self._cue_to_pad:
             self._paint_cue(cue)
 
+    def _on_cue_property_changed(self, cue, name, _value):
+        if name == "apc_idle_color" and id(cue) in self._cue_to_pad:
+            self._paint_cue(cue)
+
     def _paint_cue(self, cue):
+        if self._identify_active:
+            return
         pad = self._cue_to_pad.get(id(cue))
         if pad is None:
             return
         row, col = pad
-        behavior, color = _led_for_cue(cue)
+        behavior, color = self._led_for_cue(cue)
         self._send_pad(_pad_to_note(row, col), behavior, color)
+
+    def _led_for_cue(self, cue):
+        state = cue.state
+        if state & CueState.Error:
+            return (BEHAVIOR_BLINK_SIXTEENTH, self._color("error"))
+        if state & CueState.IsPaused:
+            return (BEHAVIOR_PULSE_QUARTER, self._color("paused"))
+        if state & CueState.IsRunning:
+            return (BEHAVIOR_FULL, self._color("running"))
+        per_cue = getattr(cue, "apc_idle_color", None)
+        idle = per_cue if per_cue is not None else self._color("idle")
+        return (BEHAVIOR_DIM, idle)
+
+    def _color(self, key):
+        return self.Config.get(f"colors.{key}", DEFAULT_COLORS[key])
 
     def _clear_all_pads(self):
         behavior, color = LED_OFF
@@ -218,3 +248,21 @@ class ApcMiniCart(Plugin):
             )
         except Exception:
             logger.exception("APC Mini Cart: failed to send pad LED.")
+
+    # ---- identify (UI smoke test) --------------------------------------
+
+    def identify(self):
+        if not self._active:
+            logger.info("APC Mini Cart: identify ignored, plugin not active.")
+            return
+        self._identify_active = True
+        for note in APC_GRID_NOTES:
+            self._send_pad(note, BEHAVIOR_FULL, COLOR_WHITE)
+        QTimer.singleShot(IDENTIFY_MS, self._identify_finish)
+
+    def _identify_finish(self):
+        self._identify_active = False
+        if self._active:
+            self._rebind_current_page()
+        else:
+            self._clear_all_pads()
