@@ -21,9 +21,13 @@ GRID_COLS = 8
 
 # Scene Launch buttons (right of grid), single-color green. Assumed top-to-bottom:
 # 0x70 = top row, 0x77 = bottom. Verify against hardware; flip _scene_note_to_row
-# if reversed. LEDs accept VV = 0 (off), 1 (on), 2 (blink).
+# if reversed. LEDs accept VV = 0 (off), 1 (on), 2 (blink) only — these buttons
+# have no brightness control on the mk2 (confirmed on hardware 2026-05-21).
+#
+# The Shift button is intentionally unused: on hardware, Shift + some Scene
+# Launch buttons triggers built-in firmware modes (e.g. a demo mode), so it
+# can't be repurposed safely. Fader-row mode is cycled by repeated taps instead.
 APC_SCENE_NOTES = range(0x70, 0x78)
-APC_SHIFT_NOTE = 0x7A
 
 # Faders 1-8 send CC 0x30..0x37; master at 0x38 is intentionally unmapped.
 APC_FADER_CCS = range(0x30, 0x38)
@@ -52,19 +56,13 @@ BRIGHTNESS_LABELS = ["10%", "25%", "50%", "65%", "75%", "90%", "100%"]
 # Scene Launch LEDs
 # ---------------------------------------------------------------------------
 
+# Scene Launch (row button) LED states. These buttons have no brightness
+# control on the mk2 (confirmed on hardware 2026-05-21), so selection is shown
+# purely by state: unselected = off, selected in volume mode = solid on,
+# selected in pan mode = blink.
 SCENE_LED_OFF = 0
 SCENE_LED_ON = 1
 SCENE_LED_BLINK = 2
-
-# Scene Launch "keylight" brightness nibbles (the Note-On channel, as for
-# pads). Used when scene_keylight is on so every row button stays findable in
-# the dark: unselected rows glow dim, the selected (volume-mode) row is bright,
-# pan-mode selected blinks. Relies on the scene LEDs honoring the brightness
-# nibble — if a given unit ignores it (dim == bright, can't tell the selected
-# row in volume mode), turn scene_keylight off to fall back to "lit only when
-# selected".
-SCENE_DIM_CHANNEL = 1     # 25% solid - unselected but findable
-SCENE_BRIGHT_CHANNEL = 6  # 100% solid - selected, volume mode
 
 
 # ---------------------------------------------------------------------------

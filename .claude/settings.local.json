@@ -32,7 +32,9 @@
       "Bash(git tag *)",
       "Bash(git reset *)",
       "Bash(grep -oE '\\\\b[A-Z][A-Z0-9_]{2,}\\\\b' apc_mini_cart/apc_mini_cart.py)",
-      "Read(//tmp/**)"
+      "Read(//tmp/**)",
+      "Bash(python3 -m py_compile apc_mini_cart/apc_mini_cart.py apc_mini_cart/settings.py apc_mini_cart/constants.py)",
+      "Bash(python3 -m py_compile apc_mini_cart/*.py)"
     ]
   }
 }

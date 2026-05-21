@@ -1,11 +1,11 @@
 # Phase 2 — Fader mapping design
 
-Decisions from the 2026-05-21 design conversation, captured for when Phase 2 work begins. **Nothing here is implemented yet.**
+Decisions from the 2026-05-21 design conversation. **Implemented and first-pass hardware-tested 2026-05-21.** Two design points were overturned by that test and are marked **[SUPERSEDED]** inline below: the Scene Launch *keylight* (the buttons can't dim) and *Shift-latched pan* (Shift fires built-in firmware modes, so it's unusable). Pan is now reached by a volume → pan → off tap cycle on the row's Scene Launch button. See the second-pass note in [../CLAUDE.md](../CLAUDE.md) for the full account.
 
 ## Mapping
 
 - **Row selection via Scene Launch buttons** (the 8 buttons to the right of the 8×8 grid — notes `0x70–0x77`, single-color green LEDs; see [primer.md](primer.md#inbound-device--host)). One row active at a time; tap to select.
-  - **LED scheme (keylight, added 2026-05-21):** by default every row button is lit *dim* so it's findable in a dark booth; the selected row is *bright* (volume mode) or *blinks* (pan mode). This needs the scene LEDs to honor the brightness nibble (the Note-On channel, as the pads do) — unverified on hardware. If a unit ignores it (dim == bright, so you can't tell the selected row in volume mode), the `scene_keylight` setting (Preferences → APC Mini Cart) turns keylight off and reverts to the original "lit only when selected" behavior: off when unselected, solid when selected-volume, blink when selected-pan. The Shift button has **no addressable LED** on the mk2, so it can't be lit at all — pan-mode arming is shown only via the selected row's blink.
+  - **LED scheme. [SUPERSEDED 2026-05-21 — keylight removed.]** Hardware confirmed the Scene Launch buttons ignore the brightness nibble, so the dim-unselected / bright-selected keylight idea is gone (along with the `scene_keylight` setting and the `SCENE_DIM_CHANNEL`/`SCENE_BRIGHT_CHANNEL` constants). The shipping scheme is state-only on channel 0: **unselected = off, selected-volume = solid on, selected-pan = blink.** Downside accepted: with nothing selected, no row button is lit, so they aren't findable in a blackout — the hardware offers no dimming to fix that.
 - **The 8 channel faders below the grid** (CC `0x30–0x37`) map 1:1 to the 8 columns of the selected row. Slider N controls the cue at `(selected_row, N)` on the current page.
 - **No master fader control.** The 9th (master) fader at CC `0x38` is intentionally unmapped — master output is handled externally on the mixer/console, and the plugin does not duplicate that knob.
 - **No row selected ⇒ sliders do nothing.** Explicit selection is the whole point of the design; we do not want sliders silently riding cues when no row is lit. Inactive is the safe default; auto-follow (e.g. "row of the most-recently-triggered cue") was rejected as too magical for a show context.
@@ -34,14 +34,15 @@ The mk2's faders are not motorized. On row select, slider positions will not mat
   - **magenta** = fader is above the stored value → pull **down** to catch.
   On catch (latch) the pad snaps back to its normal cue-state color, which doubles as the "you've got it" confirmation. Unmappable pads (no Volume/AudioPan element) and pads outside the selected row keep their normal state — an unmappable pad showing its normal colour is itself the signal that its fader does nothing. **Tradeoff:** while hunting, the indicator overrides the cue-state colour on the selected row (a running cue you're about to ride won't show green until the fader catches) — acceptable because the catch guidance is what the operator needs at that moment, and the Scene Launch LED already marks the row as live.
 
-## Pan mode (Shift-latched)
+## Pan mode
 
-LiSP exposes per-cue stereo balance via the `AudioPan` GstMediaElement ([../linux-show-player/lisp/plugins/gst_backend/elements/audio_pan.py:26-48](../linux-show-player/lisp/plugins/gst_backend/elements/audio_pan.py#L26-L48)), with a `panorama` property in `[-1.0, +1.0]` (default `0.0`). It already has its own per-cue Settings tab ("Audio Pan"), so this is a first-class user feature. The plugin should let the operator ride pan from the faders too.
+LiSP exposes per-cue stereo balance via the `AudioPan` GstMediaElement ([../linux-show-player/lisp/plugins/gst_backend/elements/audio_pan.py:26-48](../linux-show-player/lisp/plugins/gst_backend/elements/audio_pan.py#L26-L48)), with a `panorama` property in `[-1.0, +1.0]` (default `0.0`). It already has its own per-cue Settings tab ("Audio Pan"), so this is a first-class user feature. The plugin lets the operator ride pan from the faders too.
 
-- **Shift-tap a Scene Launch** to put that row into **pan mode**. The Scene Launch LED blinks (instead of solid) to signal the modal state. Sliders for that row now ride pan instead of volume.
-- **Plain tap of the same Scene Launch** (or Shift-tap again) returns the row to **volume mode**.
-- **Per-row mode.** One row can be in pan mode while another freshly-selected row is in volume mode. Mode is sticky per row until explicitly toggled or the row is deselected. (On deselect → re-select, the row reverts to volume mode — pan is the non-default and shouldn't surprise the operator on a fresh selection.)
-- **Why latched, not momentary.** Momentary Shift means the operator must hold the button while making careful adjustments — fatiguing, and prevents two-handing the fader. Latched Shift+Scene Launch is one tap to enter, one tap to leave, hands free in between.
+**[SUPERSEDED 2026-05-21 — Shift dropped, replaced by a tap cycle.]** The original design entered pan with a *Shift-tap* on the Scene Launch button. Hardware testing killed that: `Shift +` certain Scene Launch buttons triggers the unit's built-in firmware modes (e.g. a demo mode), so Shift can't be repurposed at all. The shipping scheme uses **repeated taps of the same row button to cycle volume → pan → off**, and a tap on a *different* row jumps straight to it in volume mode. The bullets below describe the intent (LED, takeover, detent); only the *entry gesture* changed.
+
+- **Tap a selected volume-mode row's Scene Launch** to put it into **pan mode**. The Scene Launch LED blinks (instead of solid) to signal the modal state. Sliders for that row now ride pan instead of volume. (A further tap deselects the row entirely.)
+- **A row always starts in volume mode** when freshly selected — pan is the non-default and shouldn't surprise the operator on a fresh selection.
+- **Single active mode.** Selecting a different row drops the previous selection, so only one row is live at a time (the code tracks one `_current_mode`, not a per-row array).
 - **Soft takeover still applies.** Same hunt-and-latch as for volume, against the cue's current `panorama` value. CC 0→127 maps linearly to `-1.0…+1.0` with `64 → 0.0`.
 - **Center-detent tolerance.** 0.0 (center) is a natural snap point for pan, but non-motorized faders can't physically detent. Soften the latch around `CC == 64` with a ±1 tolerance so "near-center" captures cleanly to true center; without this, the operator will land on `0.008` and wonder why their effect isn't dead-centre.
 
@@ -54,12 +55,12 @@ LiSP exposes per-cue stereo balance via the `AudioPan` GstMediaElement ([../linu
 ## New runtime state
 
 - `_selected_row: int | None` — currently selected row, `None` if none.
-- `_row_mode[8]: "volume" | "pan"` — per-row mode, default `"volume"`. Reset to `"volume"` on row deselect; toggled by Shift+Scene Launch tap.
+- `_current_mode: "volume" | "pan"` — mode of the selected row, default `"volume"`. Cycled by tapping the selected row's Scene Launch button; reset to `"volume"` on every fresh row selection. *(Implemented as a single value, not the per-row `_row_mode[8]` array originally sketched — only one row is live at a time.)*
 - `_slider_latched[8]: bool` — per-slider latch state, reset to all `False` on row change **and on mode change** (switching a row from volume to pan re-arms takeover against the new target value).
 - `_slider_position[8]: int` — last-known physical CC value per slider, needed for the takeover crossing check (compare previous-and-current against the stored cue value).
-- `_shift_held: bool` — tracks Shift (note `0x7A`) down/up so we can distinguish "Shift-tap on Scene Launch" from "plain tap on Scene Launch."
+- ~~`_shift_held`~~ — **removed 2026-05-21**; Shift is unusable on hardware (see the pan-mode note above).
 
-No new persistent (session-file) state. Cue volume and pan are both existing LiSP properties.
+No new persistent (session-file) state. Cue **pan** is the existing serialized `panorama` property; cue **volume** rides the existing serialized baseline `volume` property (the plugin originally rode the runtime `live_volume`, but that's reset to baseline on every cue stop and isn't saved — so a fader move was lost on replay; switched to the baseline `volume` on 2026-05-21).
 
 ## Cue-side compatibility
 
@@ -84,4 +85,4 @@ Neither volume nor pan is uniform across cue types — needs re-verifying when w
 5. ~~**`AudioPan` availability on MediaCues.**~~ **Resolved 2026-05-21:** not in the default pipeline → unavailable until the user adds it. Plugin now warns (status bar + log) when a row enters pan mode with no `AudioPan` present anywhere in it.
 6. **Pan-mode visual distinction on pads.** While a row is in pan mode, should the pads themselves indicate the mode somehow (e.g. a subtle hue tint, or a dim secondary color), or is the Scene Launch blink enough? Leaning "Scene Launch blink is enough" to avoid fighting the existing per-cue color palette — but worth a hardware test.
 7. **Center-detent tolerance value.** ±1 CC around the center (`64`) is a starting point; may need widening to ±2 or ±3 if operators find it too easy to miss. Empirical.
-8. **Scene Launch LED brightness support (keylight).** The dim-unselected / bright-selected keylight assumes the scene buttons honor the Note-On channel as a brightness nibble (as the pads do). Unverified. Test: with a row selected, do the unselected buttons (`SCENE_DIM_CHANNEL = 1`, 25%) look clearly dimmer than the selected one (`SCENE_BRIGHT_CHANNEL = 6`, 100%)? If they look identical, or if non-channel-0 messages are ignored entirely (buttons don't update), turn `scene_keylight` off — that path uses channel 0 only and is the verified-good original behavior. Tweak the two channel constants if 25%/100% isn't the right contrast.
+8. ~~**Scene Launch LED brightness support (keylight).**~~ **Resolved 2026-05-21: no.** Hardware ignores the brightness nibble on these buttons. Keylight removed; scene LEDs are state-only (off / solid / blink) on channel 0.

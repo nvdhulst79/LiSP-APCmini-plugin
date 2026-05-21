@@ -34,7 +34,6 @@ from .constants import (
     APC_FADER_CCS,
     APC_GRID_NOTES,
     APC_SCENE_NOTES,
-    APC_SHIFT_NOTE,
     BEHAVIOR_BLINK_SIXTEENTH,
     BEHAVIOR_FULL,
     BEHAVIOR_PULSE_QUARTER,
@@ -53,8 +52,6 @@ from .constants import (
     PAN_CENTER_TOL,
     ROW_MODE_PAN,
     ROW_MODE_VOLUME,
-    SCENE_BRIGHT_CHANNEL,
-    SCENE_DIM_CHANNEL,
     SCENE_LED_BLINK,
     SCENE_LED_OFF,
     SCENE_LED_ON,
@@ -106,15 +103,14 @@ class ApcMiniCart(Plugin):
         self._cue_to_pad = {}          # id(cue) -> (row, col) on visible page
         self._tracked_cues = []        # strong refs; Signal slots are weakref'd
 
-        # Fader state. Only meaningful while a row is selected. _current_mode
-        # resets to volume on every fresh row selection (pan is the non-default
-        # and shouldn't surprise on re-select). _slider_position tracks the
+        # Fader state. Only meaningful while a row is selected. A Scene Launch
+        # tap cycles the selected row through volume -> pan -> off; selecting a
+        # different row starts it in volume mode. _slider_position tracks the
         # last seen physical CC value per column; -1 = unknown until first move.
         self._selected_row = None
         self._current_mode = ROW_MODE_VOLUME
         self._slider_latched = [False] * GRID_COLS
         self._slider_position = [-1] * GRID_COLS
-        self._shift_held = False
 
         # Per-cue properties (None = "use the plugin-wide default").
         # Registered on the class so they serialize with the session file.
@@ -199,26 +195,29 @@ class ApcMiniCart(Plugin):
         self._selected_row = None
         self._current_mode = ROW_MODE_VOLUME
         self._reset_fader_latches()
-        self._shift_held = False
         self._active = False
         logger.info("APC Mini Cart: deactivated.")
 
     def _on_config_changed(self, *_):
-        """Repaint when colours/brightness/keylight change in Preferences."""
+        """Repaint when colours/brightness change in Preferences.
+
+        Scene Launch LEDs depend only on the current fader selection, not on
+        any config value, so they don't need repainting here.
+        """
         if self._active and not self._identify_active:
             self._rebind_current_page()
-            self._paint_scene_leds()  # picks up scene_keylight changes
 
     # ------------------------------------------------------------------ #
     # Inbound MIDI dispatch                                              #
     # ------------------------------------------------------------------ #
 
     def _on_midi_message(self, message):
-        """Route an inbound message to the grid, scene, shift, or fader handler.
+        """Route an inbound message to the grid, scene, or fader handler.
 
         Everything is gated on channel 0. Grid pads fire cues, Scene Launch
-        notes select a fader row, the Shift note tracks its held state, and
-        the eight mapped fader CCs drive volume/pan.
+        notes select/cycle a fader row, and the eight mapped fader CCs drive
+        volume/pan. The Shift button is deliberately ignored (its hardware
+        combos can't be repurposed — see APC_SCENE_NOTES in constants).
         """
         if message.channel != APC_CHANNEL:
             return
@@ -228,11 +227,6 @@ class ApcMiniCart(Plugin):
                 self._handle_grid_press(note)
             elif note in APC_SCENE_NOTES:
                 self._handle_scene_press(note)
-            elif note == APC_SHIFT_NOTE:
-                self._shift_held = True
-        elif message.type == "note_off":
-            if message.note == APC_SHIFT_NOTE:
-                self._shift_held = False
         elif message.type == "control_change":
             cc = message.control
             if cc in APC_FADER_CCS:
@@ -503,28 +497,27 @@ class ApcMiniCart(Plugin):
     # ------------------------------------------------------------------ #
 
     def _handle_scene_press(self, note):
-        """Select / cycle the fader row from a Scene Launch button press."""
+        """Cycle the fader row from a Scene Launch button press.
+
+        Repeated taps of the same row cycle volume -> pan -> off. Tapping a
+        different row jumps straight to that row in volume mode (so the prior
+        row deselects). This three-state cycle replaces the old Shift-to-arm-pan
+        scheme, which had to go because Shift + Scene Launch fires built-in
+        hardware modes.
+        """
         row = self._scene_note_to_row(note)
         prev_row, prev_mode = self._selected_row, self._current_mode
-        if self._selected_row == row:
-            # Re-press of the currently selected row.
-            if self._shift_held:
-                # Shift+tap: toggle volume <-> pan.
-                self._current_mode = (
-                    ROW_MODE_PAN if self._current_mode == ROW_MODE_VOLUME
-                    else ROW_MODE_VOLUME
-                )
-            elif self._current_mode == ROW_MODE_PAN:
-                # Plain tap on a pan-mode row: back to volume (still selected).
-                self._current_mode = ROW_MODE_VOLUME
-            else:
-                # Plain tap on a volume-mode row: deselect.
-                self._selected_row = None
-                self._current_mode = ROW_MODE_VOLUME
-        else:
-            # Different row (or none) selected: switch. Shift => pan, else volume.
+        if self._selected_row != row:
+            # Different row (or none) selected: select it in volume mode.
             self._selected_row = row
-            self._current_mode = ROW_MODE_PAN if self._shift_held else ROW_MODE_VOLUME
+            self._current_mode = ROW_MODE_VOLUME
+        elif self._current_mode == ROW_MODE_VOLUME:
+            # Same row, volume -> pan.
+            self._current_mode = ROW_MODE_PAN
+        else:
+            # Same row, pan -> off (deselect).
+            self._selected_row = None
+            self._current_mode = ROW_MODE_VOLUME
         self._reset_fader_latches()
         self._repaint_tracked()
         self._paint_scene_leds()
@@ -642,16 +635,32 @@ class ApcMiniCart(Plugin):
 
     @staticmethod
     def _read_property(element, mode):
-        """Read the current volume / pan value off a media element."""
+        """Read the current volume / pan value off a media element.
+
+        Volume reads the *baseline* ``volume`` (see :meth:`_write_property`),
+        so soft-takeover hunts toward the value we actually persist.
+        """
         if mode == ROW_MODE_VOLUME:
-            return float(element.live_volume)
+            return float(element.volume)
         return float(element.pan)
 
     @staticmethod
     def _write_property(element, mode, value):
-        """Write a volume / pan value to a media element."""
+        """Write a volume / pan value to a media element.
+
+        Volume mode writes the *baseline* ``volume`` property, not the runtime
+        ``live_volume`` we used to ride. ``live_volume`` is reset to the
+        baseline on every cue ``stop()`` (Volume.stop in the gst backend), so
+        a fader move only held until the next replay — the cue came back at its
+        configured volume. Writing the baseline instead:
+          * persists across replays and is saved into the session file;
+          * keeps the Cart widget's volume slider in sync (it repaints from
+            ``changed("volume")``, the baseline-property signal);
+          * is still heard live — it ``set_property``'s the same gst element.
+        Pan has no live/baseline split, so it is written directly.
+        """
         if mode == ROW_MODE_VOLUME:
-            element.live_volume = value
+            element.volume = value
         else:
             element.pan = value
 
@@ -693,39 +702,35 @@ class ApcMiniCart(Plugin):
         return note - APC_SCENE_NOTES[0]
 
     def _paint_scene_leds(self):
-        """Repaint all Scene Launch LEDs for the current selection + keylight."""
-        keylight = bool(self.Config.get("scene_keylight", True))
+        """Repaint all Scene Launch LEDs for the current selection."""
         for row in range(GRID_ROWS):
-            channel, velocity = self._scene_led_params(row, keylight)
-            self._send_scene_led(row, channel, velocity)
+            self._send_scene_led(row, self._scene_led_state(row))
 
-    def _scene_led_params(self, row, keylight):
-        """Return (channel, velocity) for one Scene Launch LED.
+    def _scene_led_state(self, row):
+        """Return the LED state (off / on / blink) for one Scene Launch button.
 
-        Channel = behavior/brightness nibble; velocity = 0 off / 1 on / 2 blink.
+        These buttons have no brightness control, so selection is shown by
+        state alone: unselected = off, selected-volume = solid on, selected-pan
+        = blink.
         """
-        if row == self._selected_row:
-            if self._current_mode == ROW_MODE_PAN:
-                return (APC_CHANNEL, SCENE_LED_BLINK)
-            # Selected, volume mode: bright when keylit, plain-on otherwise.
-            return (SCENE_BRIGHT_CHANNEL if keylight else APC_CHANNEL, SCENE_LED_ON)
-        # Unselected: dim-but-findable when keylit, else dark (original behavior).
-        if keylight:
-            return (SCENE_DIM_CHANNEL, SCENE_LED_ON)
-        return (APC_CHANNEL, SCENE_LED_OFF)
+        if row != self._selected_row:
+            return SCENE_LED_OFF
+        if self._current_mode == ROW_MODE_PAN:
+            return SCENE_LED_BLINK
+        return SCENE_LED_ON
 
     def _clear_scene_leds(self):
         """Blank all Scene Launch LEDs."""
         for row in range(GRID_ROWS):
-            self._send_scene_led(row, APC_CHANNEL, SCENE_LED_OFF)
+            self._send_scene_led(row, SCENE_LED_OFF)
 
-    def _send_scene_led(self, row, channel, velocity):
-        """Send a single Scene Launch Note-On (channel = brightness, velocity = state)."""
+    def _send_scene_led(self, row, velocity):
+        """Send a single Scene Launch Note-On (velocity = 0 off / 1 on / 2 blink)."""
         try:
             self._midi.output.send(
                 mido.Message(
                     "note_on",
-                    channel=channel,
+                    channel=APC_CHANNEL,
                     note=APC_SCENE_NOTES[0] + row,
                     velocity=velocity,
                 )
