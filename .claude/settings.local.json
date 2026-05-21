@@ -34,7 +34,16 @@
       "Bash(grep -oE '\\\\b[A-Z][A-Z0-9_]{2,}\\\\b' apc_mini_cart/apc_mini_cart.py)",
       "Read(//tmp/**)",
       "Bash(python3 -m py_compile apc_mini_cart/apc_mini_cart.py apc_mini_cart/settings.py apc_mini_cart/constants.py)",
-      "Bash(python3 -m py_compile apc_mini_cart/*.py)"
+      "Bash(python3 -m py_compile apc_mini_cart/*.py)",
+      "Bash(git mv *)",
+      "Bash(rm -rf apc_mini_cart)",
+      "Bash(poetry --directory ~/dev/linux-show-player run python -c \"from lisp.plugins.apc_mini_cart import ApcMiniCart; print\\('OK:', ApcMiniCart.Name, '|', ApcMiniCart.Authors, '|', ApcMiniCart.Depends\\)\")",
+      "Bash(poetry --directory /home/niels/dev/linux-show-player run python3 -c \"import sys; print\\(sys.version\\)\")",
+      "Bash(poetry --directory /home/niels/dev/linux-show-player run python3 -c \"from lisp.plugins.apc_mini_cart import ApcMiniCart; print\\('OK:', ApcMiniCart.Name, '|', ApcMiniCart.Authors, '|', ApcMiniCart.Depends\\)\")",
+      "Bash(poetry --directory /home/niels/dev/linux-show-player env info --path)",
+      "Bash(poetry --directory /home/niels/dev/linux-show-player env list)",
+      "Bash(curl -fsSL https://www.gnu.org/licenses/gpl-3.0.txt -o LICENSE)",
+      "Bash(grep -n \"symlink \\\\`apc_mini_cart/\\\\`\\\\|\\\\`apc_mini_cart/\\\\`\\\\|\\\\[apc_mini_cart/\" CLAUDE.md)"
     ]
   }
 }

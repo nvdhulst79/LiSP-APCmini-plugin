@@ -164,8 +164,10 @@ clone_or_pull "${PLUGIN_REPO}" "${PLUGIN_REF}" "${PLUGIN_DIR}"
 # --- symlink plugin into LiSP ----------------------------------------------
 
 step "Wiring plugin into LiSP"
-PLUGIN_SRC="${PLUGIN_DIR}/${PLUGIN_MODULE}"
-[[ -d "${PLUGIN_SRC}" ]] || die "expected plugin source at ${PLUGIN_SRC}"
+# The plugin package lives at the repo root (the repo *is* the package), so the
+# symlink target is the clone directory itself.
+PLUGIN_SRC="${PLUGIN_DIR}"
+[[ -f "${PLUGIN_SRC}/__init__.py" ]] || die "expected plugin package at ${PLUGIN_SRC} (no __init__.py)"
 
 if [[ -L "${SYMLINK_PATH}" ]]; then
     CURRENT_TARGET=$(readlink "${SYMLINK_PATH}")

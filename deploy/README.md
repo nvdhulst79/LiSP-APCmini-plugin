@@ -17,7 +17,7 @@ What it does (top to bottom, idempotent):
 2. `apt install` of LiSP's system deps: gstreamer, asound, gobject-introspection, **librtmidi7**, **python3-pyqt5 + python3-pyqt5.qtsvg**, poetry. See *Why these packages* below.
 3. Clones [linux-show-player](https://github.com/FrancescoCeruti/linux-show-player) (`develop` branch) to `~/dev/linux-show-player`, configures its poetry venv to inherit system site-packages (so the apt-installed PyQt5 is visible), then runs `poetry install`.
 4. Clones this plugin repo to `~/dev/lisp-apc-mini-cart`.
-5. Symlinks `~/dev/lisp-apc-mini-cart/apc_mini_cart` into `~/dev/linux-show-player/lisp/plugins/apc_mini_cart`.
+5. Symlinks the clone `~/dev/lisp-apc-mini-cart` into `~/dev/linux-show-player/lisp/plugins/apc_mini_cart` (the repo root *is* the plugin package).
 6. Drops a `lisp-apc` launcher into `~/.local/bin/` and a `.desktop` file into `~/.local/share/applications/` so the app shows up in the menu.
 
 ## Why these packages (and the system-site-packages trick)
