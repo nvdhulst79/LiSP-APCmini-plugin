@@ -1,3 +1,5 @@
+import logging
+
 from PyQt5.QtCore import Qt, QT_TRANSLATE_NOOP
 from PyQt5.QtWidgets import (
     QComboBox,
@@ -14,15 +16,23 @@ from lisp.plugins import get_plugin
 from lisp.ui.settings.pages import SettingsPage
 from lisp.ui.ui_utils import translate
 
+logger = logging.getLogger(__name__)
+
 # Limited APC mk2 palette exposed in the UI. Values are palette indices
 # (see Akai protocol PDF p.4-5). "Default" / None means "use the plugin's
 # global idle color" for per-cue overrides.
+#
+# IMPORTANT: every value used in DEFAULT_COLORS must appear here, otherwise
+# the settings combo can't represent it: QComboBox.findData() returns -1 and
+# _select_combo_value() silently falls back to index 0 (White), which then
+# gets written back on save. Green is 87 (bright green #00FF00) precisely
+# because that's the running default below.
 PALETTE_CHOICES = [
     ("Default", None),
     ("White", 3),
     ("Red", 5),
     ("Yellow", 13),
-    ("Green", 21),
+    ("Green", 87),
     ("Blue", 45),
     ("Magenta", 53),
 ]
@@ -75,7 +85,18 @@ def _build_color_combo(parent, choices):
 
 def _select_combo_value(combo, value):
     idx = combo.findData(value)
-    combo.setCurrentIndex(idx if idx >= 0 else 0)
+    if idx < 0:
+        # The stored value has no matching entry, so we can't show it. Falling
+        # back to index 0 means saving will overwrite the stored value with
+        # whatever that entry is — silent data loss. Warn so a palette/default
+        # mismatch (see PALETTE_CHOICES) is visible instead of mysterious.
+        logger.warning(
+            "APC Mini Cart: settings value %r not in combo choices; "
+            "defaulting to first entry. This will overwrite it on save.",
+            value,
+        )
+        idx = 0
+    combo.setCurrentIndex(idx)
 
 
 def _build_brightness_row(parent):
