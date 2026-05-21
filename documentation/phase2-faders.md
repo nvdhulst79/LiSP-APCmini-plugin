@@ -27,10 +27,11 @@ The mk2's faders are not motorized. On row select, slider positions will not mat
 - On row select, each slider is **inactive** until its physical position crosses through the cue's current stored volume — then it **latches** and starts driving the cue.
 - Latching is per-slider, not per-row: within a row, some sliders may already be latched while others are still hunting.
 - On row change (or deselect), all sliders revert to inactive.
-- **Operator feedback for hunting sliders.** The corresponding pad LED should indicate which way to push to catch the value. Two candidate encodings:
-  - *Hue shift:* tint pad slightly one color when slider is below, another when above. Risk: conflicts with the existing idle/running/paused/error palette and the per-cue idle-color override.
-  - *Behavior nibble:* keep the cue's normal color but switch to a slow pulse/blink while hunting. Cleaner, doesn't fight the palette, also works on mk1 (monochrome LEDs).
-  Lean toward the behavior-nibble approach — exact pattern (pulse vs. blink, speed) TBD when implemented.
+- **Operator feedback for hunting sliders — implemented 2026-05-21 (direction by color).** Mappable pads in the selected row show a hunting indicator until their fader latches: a slow "breathing" pulse (behavior nibble 10, pulse 1/2 — slower than the 1/4 pulse used for paused) in a color that tells the operator which way to move the fader:
+  - **white** = armed but untouched (position unknown — the APC doesn't report fader position until it moves, so direction can't be shown until the first nudge);
+  - **blue** = fader is below the stored value → push **up** to catch;
+  - **magenta** = fader is above the stored value → pull **down** to catch.
+  On catch (latch) the pad snaps back to its normal cue-state color, which doubles as the "you've got it" confirmation. Unmappable pads (no Volume/AudioPan element) and pads outside the selected row keep their normal state — an unmappable pad showing its normal colour is itself the signal that its fader does nothing. **Tradeoff:** while hunting, the indicator overrides the cue-state colour on the selected row (a running cue you're about to ride won't show green until the fader catches) — acceptable because the catch guidance is what the operator needs at that moment, and the Scene Launch LED already marks the row as live.
 
 ## Pan mode (Shift-latched)
 
@@ -72,12 +73,11 @@ Neither volume nor pan is uniform across cue types — needs re-verifying when w
 - **Per-cue "lock from fader" toggle** (operator marks a cue as not-fader-controllable). Niche; skip until asked.
 - **Track Buttons** (the 8 buttons below the grid, notes `0x64–0x6B`) — no use case yet; leave unmapped.
 - **Shift modal combos** — orthogonal feature; carry separately.
-- **mk1 support** — same 9-fader layout, but monochrome pad LEDs make the hunting-hint scheme need an alternate encoding (probably blink-rate). Defer until anyone actually has a mk1.
 
 ## Open questions for implementation time
 
 1. **Scene Launch row ordering.** Primer lists "Scene Launch 1–8" notes `0x70–0x77` but does not specify whether button 1 is top or bottom. Verify against hardware; the Akai protocol PDF is the authority.
-2. **Hunting indicator encoding** (hue shift vs. behavior nibble — see above).
+2. ~~**Hunting indicator encoding** (hue shift vs. behavior nibble).~~ **Resolved 2026-05-21:** direction-by-color (white armed / blue push-up / magenta pull-down, slow pulse) — see the soft-takeover section above. Remaining sub-question for hardware: are blue/magenta legible enough at a glance in a dark booth, and is blue=up / magenta=down the right mnemonic, or should it be flipped / surfaced in the UI hint?
 3. **Fade ramp.** Should slider moves apply instantly, or interpolate over a few ms to avoid zipper noise on coarse 7-bit CC values? Probably interpolate; LiSP's existing volume-fade machinery may already handle this.
 4. **Multi-page interaction.** When the user switches Cart Layout pages, the selected row stays the same (row index is global) but the cues under it change — sliders go back to inactive on page change, same as row change.
 5. **`AudioPan` availability on MediaCues.** Is it added to every MediaCue's pipeline by default, or only when the user explicitly enables it in the cue settings? Determines whether the pan-mode "unmappable" indicator is a common sight or an edge case.

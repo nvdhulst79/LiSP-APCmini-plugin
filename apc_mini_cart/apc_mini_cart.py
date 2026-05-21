@@ -66,6 +66,19 @@ VOLUME_CC_MAX = 1.0
 PAN_CENTER_CC = 64
 PAN_CENTER_TOL = 1
 
+# Soft-takeover hunting indicator. Painted only on mappable pads in the
+# selected row while their fader is unlatched. Slow "breathing" pulse (1/2,
+# slower than the 1/4 pulse used for paused) plus a color that tells the
+# operator which way to move the fader to catch the stored value:
+#   - armed but untouched (position unknown): white
+#   - fader below the value -> push UP:        blue
+#   - fader above the value -> pull DOWN:       magenta
+# On catch (latch) the pad snaps back to its normal cue-state color.
+HUNT_BEHAVIOR = 10        # pulse 1/2
+HUNT_ARMED_COLOR = 3      # white
+HUNT_UP_COLOR = 45        # blue
+HUNT_DOWN_COLOR = 53      # magenta
+
 
 def _pad_to_note(row, col):
     return (7 - row) * 8 + col
@@ -307,8 +320,30 @@ class ApcMiniCart(Plugin):
         if pad is None:
             return
         row, col = pad
-        behavior, color = self._led_for_cue(cue)
+        behavior, color = self._led_for_pad(cue, row, col)
         self._send_pad(_pad_to_note(row, col), behavior, color)
+
+    def _led_for_pad(self, cue, row, col):
+        # While a row is selected, its mappable pads show the hunting indicator
+        # until their fader latches; everything else uses the normal cue state.
+        if self._selected_row == row and not self._slider_latched[col]:
+            element = self._fader_element(cue, self._current_mode)
+            if element is not None:
+                return self._hunting_led(element, col)
+        return self._led_for_cue(cue)
+
+    def _hunting_led(self, element, col):
+        pos = self._slider_position[col]
+        if pos < 0:
+            # Fader not touched since arming: position unknown, no direction yet.
+            return (HUNT_BEHAVIOR, HUNT_ARMED_COLOR)
+        try:
+            target = self._read_property(element, self._current_mode)
+        except Exception:
+            return (HUNT_BEHAVIOR, HUNT_ARMED_COLOR)
+        target_cc = self._value_to_cc(target, self._current_mode)
+        color = HUNT_UP_COLOR if pos < target_cc else HUNT_DOWN_COLOR
+        return (HUNT_BEHAVIOR, color)
 
     def _led_for_cue(self, cue):
         state = cue.state
@@ -385,6 +420,7 @@ class ApcMiniCart(Plugin):
             self._selected_row = row
             self._current_mode = ROW_MODE_PAN if self._shift_held else ROW_MODE_VOLUME
         self._reset_fader_latches()
+        self._repaint_tracked()
         self._paint_scene_leds()
 
     def _handle_fader(self, col, cc_value):
@@ -416,14 +452,18 @@ class ApcMiniCart(Plugin):
             self._slider_position[col] = cc_value
             if prev_cc < 0:
                 # First CC since arming: we don't know which side of target
-                # the slider was on yet. Wait for a second sample.
+                # the slider was on yet. Wait for a second sample, but repaint
+                # now that position is known so the pad shows the catch direction.
+                self._paint_cue(cue)
                 return
             # Crossing test in CC space: (prev - target) and (curr - target)
             # have opposite signs (or one is zero) iff the slider crossed or
             # landed on the target value.
             if (prev_cc - target_cc) * (cc_value - target_cc) > 0:
                 return
+            # Caught: latch and repaint to snap the pad back to its cue state.
             self._slider_latched[col] = True
+            self._paint_cue(cue)
 
         new_value = self._cc_to_value(cc_value, mode)
         try:
@@ -437,6 +477,12 @@ class ApcMiniCart(Plugin):
         for i in range(8):
             self._slider_latched[i] = False
             self._slider_position[i] = -1
+
+    def _repaint_tracked(self):
+        # Repaint every bound pad so hunting indicators appear on the newly
+        # selected row and clear from any previously selected one.
+        for cue in self._tracked_cues:
+            self._paint_cue(cue)
 
     @staticmethod
     def _fader_element(cue, mode):

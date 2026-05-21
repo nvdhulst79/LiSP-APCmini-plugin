@@ -32,7 +32,6 @@ A plugin gives positional mapping, bidirectional LED feedback, reorder-safety, a
 **Out of scope for v1:**
 - Drum / Note modes (Ableton-centric).
 - Multi-page navigation (user only needs 1 page = 64 cues).
-- mk1 support (different MIDI map; add later if needed).
 - Per-cue custom color (nice-to-have, phase 2).
 - Fader mappings (TBD, phase 2).
 
