@@ -2,6 +2,7 @@ import logging
 
 from PyQt5.QtCore import Qt, QT_TRANSLATE_NOOP
 from PyQt5.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
@@ -182,6 +183,17 @@ class ApcMiniCartSettings(SettingsPage):
         bform.addRow(self.runningBrightnessLabel, runningRow)
         bform.addRow(self.brightnessHint)
 
+        self.sceneGroup = QGroupBox(self)
+        self.sceneGroup.setLayout(QVBoxLayout())
+        self.layout().addWidget(self.sceneGroup)
+
+        self.sceneKeylightCheck = QCheckBox(self.sceneGroup)
+        self.sceneGroup.layout().addWidget(self.sceneKeylightCheck)
+
+        self.sceneKeylightHint = QLabel(self.sceneGroup)
+        self.sceneKeylightHint.setWordWrap(True)
+        self.sceneGroup.layout().addWidget(self.sceneKeylightHint)
+
         self.identifyGroup = QGroupBox(self)
         self.identifyGroup.setLayout(QHBoxLayout())
         self.layout().addWidget(self.identifyGroup)
@@ -212,6 +224,18 @@ class ApcMiniCartSettings(SettingsPage):
             "Paused (pulse) and error (blink) use the device's built-in "
             "animations — their brightness is fixed by the hardware.",
         ))
+        self.sceneGroup.setTitle(translate("ApcMiniCart", "Row buttons (Scene Launch)"))
+        self.sceneKeylightCheck.setText(
+            translate("ApcMiniCart", "Keep all row buttons lit (dim when not selected)")
+        )
+        self.sceneKeylightHint.setText(translate(
+            "ApcMiniCart",
+            "Lights every Scene Launch button dimly so they're findable in the "
+            "dark; the selected row is bright (or blinks in pan mode). If your "
+            "unit can't dim these buttons (dim and bright look identical, so you "
+            "can't tell which row is selected), turn this off — then only the "
+            "selected row lights up.",
+        ))
         self.identifyGroup.setTitle(translate("ApcMiniCart", "Hardware check"))
         self.identifyButton.setText(translate("ApcMiniCart", "Flash grid"))
         self.identifyHint.setText(translate(
@@ -240,6 +264,8 @@ class ApcMiniCartSettings(SettingsPage):
         self.idleBrightnessValue.setText(BRIGHTNESS_LABELS[self.idleBrightnessSlider.value()])
         self.runningBrightnessValue.setText(BRIGHTNESS_LABELS[self.runningBrightnessSlider.value()])
 
+        self.sceneKeylightCheck.setChecked((settings or {}).get("scene_keylight", True))
+
     def getSettings(self):
         return {
             "colors": {
@@ -253,6 +279,7 @@ class ApcMiniCartSettings(SettingsPage):
                 "running": self.runningBrightnessSlider.value(),
             },
             "trigger_mode": self.triggerModeCombo.currentData(),
+            "scene_keylight": self.sceneKeylightCheck.isChecked(),
         }
 
     def _on_identify_clicked(self):

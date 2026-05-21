@@ -1,6 +1,7 @@
 {
-  "_version_": "0.5",
+  "_version_": "0.6",
   "_enabled_": true,
+  "scene_keylight": true,
   "colors": {
     "idle": 3,
     "running": 87,

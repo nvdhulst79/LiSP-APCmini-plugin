@@ -39,6 +39,16 @@ SCENE_LED_OFF = 0
 SCENE_LED_ON = 1
 SCENE_LED_BLINK = 2
 
+# Scene Launch "keylight" brightness nibbles (the Note-On channel, as for
+# pads). Used when scene_keylight is on so every row button stays findable in
+# the dark: unselected rows glow dim, the selected (volume-mode) row is bright,
+# pan-mode selected blinks. Relies on the scene LEDs honoring the brightness
+# nibble — if a given unit ignores it (dim == bright, can't tell the selected
+# row in volume mode), turn scene_keylight off to fall back to "lit only when
+# selected".
+SCENE_DIM_CHANNEL = 1     # 25% solid - unselected but findable
+SCENE_BRIGHT_CHANNEL = 6  # 100% solid - selected, volume mode
+
 # APC mk2 LED behavior nibbles (Note-On channel).
 BEHAVIOR_DIM = 0               # 10% solid
 BEHAVIOR_FULL = 6              # 100% solid
@@ -149,7 +159,7 @@ class ApcMiniCart(Plugin):
         model.item_moved.connect(self._on_model_changed, Connection.QtQueued)
         model.model_reset.connect(self._on_model_changed, Connection.QtQueued)
         self.app.layout.view.currentChanged.connect(self._on_page_changed)
-        self._clear_scene_leds()
+        self._paint_scene_leds()
         self._rebind_current_page()
         logger.info("APC Mini Cart: activated (Cart Layout detected).")
 
@@ -261,6 +271,7 @@ class ApcMiniCart(Plugin):
     def _on_config_changed(self, *_):
         if self._active and not self._identify_active:
             self._rebind_current_page()
+            self._paint_scene_leds()  # picks up scene_keylight changes
 
     def _rebind_current_page(self):
         if self._identify_active:
@@ -569,25 +580,36 @@ class ApcMiniCart(Plugin):
         return note - APC_SCENE_NOTES[0]
 
     def _paint_scene_leds(self):
+        keylight = bool(self.Config.get("scene_keylight", True))
         for row in range(8):
-            if row == self._selected_row:
-                led = SCENE_LED_BLINK if self._current_mode == ROW_MODE_PAN else SCENE_LED_ON
-            else:
-                led = SCENE_LED_OFF
-            self._send_scene_led(row, led)
+            channel, velocity = self._scene_led_params(row, keylight)
+            self._send_scene_led(row, channel, velocity)
+
+    def _scene_led_params(self, row, keylight):
+        # (channel, velocity) for one Scene Launch LED. Channel = behavior/
+        # brightness nibble; velocity = 0 off / 1 on / 2 blink.
+        if row == self._selected_row:
+            if self._current_mode == ROW_MODE_PAN:
+                return (APC_CHANNEL, SCENE_LED_BLINK)
+            # Selected, volume mode: bright when keylit, plain-on otherwise.
+            return (SCENE_BRIGHT_CHANNEL if keylight else APC_CHANNEL, SCENE_LED_ON)
+        # Unselected: dim-but-findable when keylit, else dark (original behavior).
+        if keylight:
+            return (SCENE_DIM_CHANNEL, SCENE_LED_ON)
+        return (APC_CHANNEL, SCENE_LED_OFF)
 
     def _clear_scene_leds(self):
         for row in range(8):
-            self._send_scene_led(row, SCENE_LED_OFF)
+            self._send_scene_led(row, APC_CHANNEL, SCENE_LED_OFF)
 
-    def _send_scene_led(self, row, value):
+    def _send_scene_led(self, row, channel, velocity):
         try:
             self._midi.output.send(
                 mido.Message(
                     "note_on",
-                    channel=APC_CHANNEL,
+                    channel=channel,
                     note=APC_SCENE_NOTES[0] + row,
-                    velocity=value,
+                    velocity=velocity,
                 )
             )
         except Exception:
