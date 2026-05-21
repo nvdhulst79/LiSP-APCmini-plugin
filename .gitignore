@@ -3,3 +3,8 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+
+# Development-only, kept local but not published
+/CLAUDE.md
+/.claude/
+/research/

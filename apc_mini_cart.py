@@ -6,7 +6,8 @@ The plugin wires the APC's 8x8 pad grid to the currently visible cart page:
 * Cue state      -> pad LED (idle / running / paused / error), with the APC
                     handling pulse/blink animations on-board.
 * Faders         -> per-row volume / pan with soft takeover; the row is picked
-                    with a Scene Launch button (Shift selects pan mode).
+                    with a Scene Launch button, whose taps cycle the row
+                    through volume -> pan -> off.
 * Preferences    -> default colours, brightness, and pad-press behavior.
 * Per-cue tab    -> per-cart idle-colour and trigger-mode overrides.
 
