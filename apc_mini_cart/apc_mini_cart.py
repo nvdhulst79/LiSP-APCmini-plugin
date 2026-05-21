@@ -26,6 +26,19 @@ logger = logging.getLogger(__name__)
 APC_GRID_NOTES = range(0, 64)
 APC_CHANNEL = 0
 
+# Scene Launch buttons (right of grid), single-color green. Assumed top-to-bottom:
+# 0x70 = top row, 0x77 = bottom. Verify against hardware; flip _scene_note_to_row
+# if reversed. LEDs accept VV = 0 (off), 1 (on), 2 (blink).
+APC_SCENE_NOTES = range(0x70, 0x78)
+APC_SHIFT_NOTE = 0x7A
+
+# Faders 1-8 send CC 0x30..0x37; master at 0x38 is intentionally unmapped.
+APC_FADER_CCS = range(0x30, 0x38)
+
+SCENE_LED_OFF = 0
+SCENE_LED_ON = 1
+SCENE_LED_BLINK = 2
+
 # APC mk2 LED behavior nibbles (Note-On channel).
 BEHAVIOR_DIM = 0               # 10% solid
 BEHAVIOR_FULL = 6              # 100% solid
@@ -38,6 +51,20 @@ COLOR_WHITE = 3
 LED_OFF = (BEHAVIOR_DIM, COLOR_OFF)
 
 IDENTIFY_MS = 1000
+
+# Fader modes (per selected row).
+ROW_MODE_VOLUME = "volume"
+ROW_MODE_PAN = "pan"
+
+# Volume mapping: CC 0..127 -> 0.0..1.0 (unity). Operators who need >unity
+# should set the cue's baseline volume higher and ride it down with the fader.
+VOLUME_CC_MAX = 1.0
+
+# Pan mapping: CC 0..127 -> -1.0..+1.0 with center at CC 64. Sliders within
+# +/- PAN_CENTER_TOL of CC 64 snap to exactly 0.0 (poor-man's center detent
+# for the non-motorized faders).
+PAN_CENTER_CC = 64
+PAN_CENTER_TOL = 1
 
 
 def _pad_to_note(row, col):
@@ -57,6 +84,16 @@ class ApcMiniCart(Plugin):
         self._identify_active = False
         self._cue_to_pad = {}     # id(cue) -> (row, col)
         self._tracked_cues = []   # keep refs alive; Signal uses weakrefs
+
+        # Fader state. Only meaningful while a row is selected. _current_mode
+        # resets to volume on every fresh row selection (pan is the non-default
+        # and shouldn't surprise on re-select). _slider_position tracks the
+        # last seen physical CC value per column; -1 = unknown until first move.
+        self._selected_row = None
+        self._current_mode = ROW_MODE_VOLUME
+        self._slider_latched = [False] * 8
+        self._slider_position = [-1] * 8
+        self._shift_held = False
 
         # Per-cue settings. None = "use the plugin-wide default".
         Cue.apc_idle_color = Property(default=None)
@@ -99,6 +136,7 @@ class ApcMiniCart(Plugin):
         model.item_moved.connect(self._on_model_changed, Connection.QtQueued)
         model.model_reset.connect(self._on_model_changed, Connection.QtQueued)
         self.app.layout.view.currentChanged.connect(self._on_page_changed)
+        self._clear_scene_leds()
         self._rebind_current_page()
         logger.info("APC Mini Cart: activated (Cart Layout detected).")
 
@@ -118,21 +156,40 @@ class ApcMiniCart(Plugin):
             signal.disconnect(self._on_model_changed)
         self._midi.input.new_message.disconnect(self._on_midi_message)
         self._clear_all_pads()
+        self._clear_scene_leds()
+        self._selected_row = None
+        self._current_mode = ROW_MODE_VOLUME
+        self._reset_fader_latches()
+        self._shift_held = False
         self._active = False
         logger.info("APC Mini Cart: deactivated.")
 
-    # ---- inbound: pad press -> cue.execute -----------------------------
+    # ---- inbound MIDI dispatch -----------------------------------------
 
     def _on_midi_message(self, message):
-        if message.type != "note_on":
-            return
         if message.channel != APC_CHANNEL:
             return
-        if message.note not in APC_GRID_NOTES:
-            return
+        if message.type == "note_on":
+            note = message.note
+            if note in APC_GRID_NOTES:
+                self._handle_grid_press(note)
+            elif note in APC_SCENE_NOTES:
+                self._handle_scene_press(note)
+            elif note == APC_SHIFT_NOTE:
+                self._shift_held = True
+        elif message.type == "note_off":
+            if message.note == APC_SHIFT_NOTE:
+                self._shift_held = False
+        elif message.type == "control_change":
+            cc = message.control
+            if cc in APC_FADER_CCS:
+                self._handle_fader(cc - APC_FADER_CCS[0], message.value)
 
-        row = 7 - (message.note // 8)
-        col = message.note % 8
+    # ---- inbound: pad press -> cue.execute -----------------------------
+
+    def _handle_grid_press(self, note):
+        row = 7 - (note // 8)
+        col = note % 8
         page = self.app.layout.current_page()
 
         try:
@@ -177,9 +234,15 @@ class ApcMiniCart(Plugin):
     # ---- outbound: LED feedback ----------------------------------------
 
     def _on_page_changed(self, _index):
-        self._rebind_current_page()
+        self._invalidate_page_bindings()
 
     def _on_model_changed(self, *_):
+        self._invalidate_page_bindings()
+
+    def _invalidate_page_bindings(self):
+        # Cues under the selected row may have changed (or the row itself
+        # is empty now); re-arm soft takeover and repaint.
+        self._reset_fader_latches()
         self._rebind_current_page()
 
     def _on_config_changed(self, *_):
@@ -297,3 +360,157 @@ class ApcMiniCart(Plugin):
             self._rebind_current_page()
         else:
             self._clear_all_pads()
+
+    # ---- faders: row selection + soft takeover -------------------------
+
+    def _handle_scene_press(self, note):
+        row = self._scene_note_to_row(note)
+        if self._selected_row == row:
+            # Re-press of the currently selected row.
+            if self._shift_held:
+                # Shift+tap: toggle volume <-> pan.
+                self._current_mode = (
+                    ROW_MODE_PAN if self._current_mode == ROW_MODE_VOLUME
+                    else ROW_MODE_VOLUME
+                )
+            elif self._current_mode == ROW_MODE_PAN:
+                # Plain tap on a pan-mode row: back to volume (still selected).
+                self._current_mode = ROW_MODE_VOLUME
+            else:
+                # Plain tap on a volume-mode row: deselect.
+                self._selected_row = None
+                self._current_mode = ROW_MODE_VOLUME
+        else:
+            # Different row (or none) selected: switch. Shift => pan, else volume.
+            self._selected_row = row
+            self._current_mode = ROW_MODE_PAN if self._shift_held else ROW_MODE_VOLUME
+        self._reset_fader_latches()
+        self._paint_scene_leds()
+
+    def _handle_fader(self, col, cc_value):
+        if self._selected_row is None:
+            return
+        row = self._selected_row
+        page = self.app.layout.current_page()
+        try:
+            cue = self.app.layout.model.item((page, row, col))
+        except IndexError:
+            return
+
+        mode = self._current_mode
+        element = self._fader_element(cue, mode)
+        if element is None:
+            # Cue lacks Volume/AudioPan in its pipeline; slider stays inert
+            # (no audible effect, no surprise on the next row selection).
+            return
+
+        try:
+            target_value = self._read_property(element, mode)
+        except Exception:
+            logger.exception("APC Mini Cart: failed to read %s on cue %r.", mode, cue.name)
+            return
+        target_cc = self._value_to_cc(target_value, mode)
+
+        if not self._slider_latched[col]:
+            prev_cc = self._slider_position[col]
+            self._slider_position[col] = cc_value
+            if prev_cc < 0:
+                # First CC since arming: we don't know which side of target
+                # the slider was on yet. Wait for a second sample.
+                return
+            # Crossing test in CC space: (prev - target) and (curr - target)
+            # have opposite signs (or one is zero) iff the slider crossed or
+            # landed on the target value.
+            if (prev_cc - target_cc) * (cc_value - target_cc) > 0:
+                return
+            self._slider_latched[col] = True
+
+        new_value = self._cc_to_value(cc_value, mode)
+        try:
+            self._write_property(element, mode, new_value)
+        except Exception:
+            logger.exception("APC Mini Cart: failed to write %s on cue %r.", mode, cue.name)
+            return
+        self._slider_position[col] = cc_value
+
+    def _reset_fader_latches(self):
+        for i in range(8):
+            self._slider_latched[i] = False
+            self._slider_position[i] = -1
+
+    @staticmethod
+    def _fader_element(cue, mode):
+        media = getattr(cue, "media", None)
+        if media is None or not hasattr(media, "element"):
+            return None
+        if mode == ROW_MODE_VOLUME:
+            return media.element("Volume")
+        return media.element("AudioPan")
+
+    @staticmethod
+    def _read_property(element, mode):
+        if mode == ROW_MODE_VOLUME:
+            return float(element.live_volume)
+        return float(element.pan)
+
+    @staticmethod
+    def _write_property(element, mode, value):
+        if mode == ROW_MODE_VOLUME:
+            element.live_volume = value
+        else:
+            element.pan = value
+
+    @staticmethod
+    def _value_to_cc(value, mode):
+        if mode == ROW_MODE_VOLUME:
+            v = max(0.0, min(VOLUME_CC_MAX, value))
+            return int(round(v / VOLUME_CC_MAX * 127))
+        p = max(-1.0, min(1.0, value))
+        if p < 0:
+            return int(round((p + 1.0) * PAN_CENTER_CC))
+        if p > 0:
+            return PAN_CENTER_CC + int(round(p * (127 - PAN_CENTER_CC)))
+        return PAN_CENTER_CC
+
+    @staticmethod
+    def _cc_to_value(cc, mode):
+        if mode == ROW_MODE_VOLUME:
+            return cc / 127.0 * VOLUME_CC_MAX
+        if abs(cc - PAN_CENTER_CC) <= PAN_CENTER_TOL:
+            return 0.0
+        if cc < PAN_CENTER_CC:
+            return (cc - PAN_CENTER_CC) / PAN_CENTER_CC  # -1.0 .. 0
+        return (cc - PAN_CENTER_CC) / (127 - PAN_CENTER_CC)  # 0 .. +1.0
+
+    # ---- Scene Launch LEDs ---------------------------------------------
+
+    @staticmethod
+    def _scene_note_to_row(note):
+        # Assumes Scene Launch 1 (top) = note 0x70; flip this mapping if
+        # hardware test shows the buttons are numbered bottom-up.
+        return note - APC_SCENE_NOTES[0]
+
+    def _paint_scene_leds(self):
+        for row in range(8):
+            if row == self._selected_row:
+                led = SCENE_LED_BLINK if self._current_mode == ROW_MODE_PAN else SCENE_LED_ON
+            else:
+                led = SCENE_LED_OFF
+            self._send_scene_led(row, led)
+
+    def _clear_scene_leds(self):
+        for row in range(8):
+            self._send_scene_led(row, SCENE_LED_OFF)
+
+    def _send_scene_led(self, row, value):
+        try:
+            self._midi.output.send(
+                mido.Message(
+                    "note_on",
+                    channel=APC_CHANNEL,
+                    note=APC_SCENE_NOTES[0] + row,
+                    velocity=value,
+                )
+            )
+        except Exception:
+            logger.exception("APC Mini Cart: failed to send Scene Launch LED.")
