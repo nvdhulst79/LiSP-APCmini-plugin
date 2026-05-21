@@ -1,3 +1,19 @@
+"""Preferences and per-cue settings pages for the APC Mini Cart plugin.
+
+Two pages are exposed:
+
+* :class:`ApcMiniCartSettings` — app-level page reached from
+  ``Preferences -> APC Mini Cart``. Lets the user set default state colours,
+  per-state brightness, pad-press behaviour, the Scene Launch keylight, and
+  run a hardware smoke test.
+* :class:`ApcMiniCartCueSettings` — per-cue ``APC Mini`` tab. Lets the user
+  override the idle colour and trigger mode on a single cart.
+
+Both pages share helpers at the top of the file. All protocol constants
+(palette indices, brightness labels, defaults) live in
+:mod:`apc_mini_cart.constants`.
+"""
+
 import logging
 
 from PyQt5.QtCore import Qt, QT_TRANSLATE_NOOP
@@ -17,67 +33,30 @@ from lisp.plugins import get_plugin
 from lisp.ui.settings.pages import SettingsPage
 from lisp.ui.ui_utils import translate
 
+from .constants import (
+    APP_LEVEL_PALETTE,
+    BRIGHTNESS_LABELS,
+    CUE_TRIGGER_MODE_CHOICES,
+    DEFAULT_BRIGHTNESS,
+    DEFAULT_COLORS,
+    GLOBAL_TRIGGER_MODE_CHOICES,
+    PALETTE_CHOICES,
+    TRIGGER_MODE_DEFAULT,
+)
+
 logger = logging.getLogger(__name__)
 
-# Limited APC mk2 palette exposed in the UI. Values are palette indices
-# (see Akai protocol PDF p.4-5). "Default" / None means "use the plugin's
-# global idle color" for per-cue overrides.
-#
-# IMPORTANT: every value used in DEFAULT_COLORS must appear here, otherwise
-# the settings combo can't represent it: QComboBox.findData() returns -1 and
-# _select_combo_value() silently falls back to index 0 (White), which then
-# gets written back on save. Green is 87 (bright green #00FF00) precisely
-# because that's the running default below.
-PALETTE_CHOICES = [
-    ("Default", None),
-    ("White", 3),
-    ("Red", 5),
-    ("Yellow", 13),
-    ("Green", 87),
-    ("Blue", 45),
-    ("Magenta", 53),
-]
 
-# Same list without the Default entry, used by the app-level page where
-# every state needs a concrete color.
-APP_LEVEL_PALETTE = [(label, value) for label, value in PALETTE_CHOICES if value is not None]
+# ---------------------------------------------------------------------------
+# Widget helpers
+# ---------------------------------------------------------------------------
 
-DEFAULT_COLORS = {
-    "idle": 3,      # white
-    "running": 87,  # bright green
-    "paused": 13,   # yellow
-    "error": 5,     # red
-}
+def _build_combo(parent, choices):
+    """Build a ``QComboBox`` from a list of ``(label, value)`` tuples.
 
-# APC mk2 solid-brightness nibbles (Note-On channel 0-6). Used for idle
-# and running states; paused (pulse) and error (blink) live on different
-# behavior nibbles whose brightness is fixed by the firmware.
-# Slider position == nibble; the label at that index is what we show.
-BRIGHTNESS_LABELS = ["10%", "25%", "50%", "65%", "75%", "90%", "100%"]
-
-DEFAULT_BRIGHTNESS = {
-    "idle": 0,     # 10%
-    "running": 6,  # 100%
-}
-
-# What happens when a pad is pressed for a cue that is already running.
-#   "toggle"    -> cue.execute() (LiSP's native: start if stopped, stop if running)
-#   "retrigger" -> interrupt + start (always play from the beginning)
-TRIGGER_MODE_DEFAULT = "retrigger"
-
-GLOBAL_TRIGGER_MODE_CHOICES = [
-    ("Retrigger (restart from beginning)", "retrigger"),
-    ("Toggle (press again to stop)", "toggle"),
-]
-
-CUE_TRIGGER_MODE_CHOICES = [
-    ("Use default", None),
-    ("Retrigger (restart from beginning)", "retrigger"),
-    ("Toggle (press again to stop)", "toggle"),
-]
-
-
-def _build_color_combo(parent, choices):
+    The value is stashed on each item via ``userData`` so callers can read
+    it back with ``combo.currentData()``.
+    """
     combo = QComboBox(parent)
     for label, value in choices:
         combo.addItem(label, userData=value)
@@ -85,12 +64,15 @@ def _build_color_combo(parent, choices):
 
 
 def _select_combo_value(combo, value):
+    """Select the combo item whose ``userData`` equals ``value``.
+
+    When no item matches we fall back to index 0 and *warn*: saving will then
+    overwrite the stored value with that entry, which is silent data loss. The
+    warning makes a palette/default mismatch (see PALETTE_CHOICES) visible
+    instead of mysterious.
+    """
     idx = combo.findData(value)
     if idx < 0:
-        # The stored value has no matching entry, so we can't show it. Falling
-        # back to index 0 means saving will overwrite the stored value with
-        # whatever that entry is — silent data loss. Warn so a palette/default
-        # mismatch (see PALETTE_CHOICES) is visible instead of mysterious.
         logger.warning(
             "APC Mini Cart: settings value %r not in combo choices; "
             "defaulting to first entry. This will overwrite it on save.",
@@ -101,7 +83,12 @@ def _select_combo_value(combo, value):
 
 
 def _build_brightness_row(parent):
-    """Returns (row_layout, slider, value_label)."""
+    """Build a discrete brightness slider with a percentage label.
+
+    Returns ``(row_layout, slider, value_label)``. The slider snaps to the
+    seven valid solid-brightness nibbles; the label shows the matching
+    ``BRIGHTNESS_LABELS`` entry and updates live as the user drags.
+    """
     slider = QSlider(Qt.Horizontal, parent)
     slider.setRange(0, len(BRIGHTNESS_LABELS) - 1)
     slider.setSingleStep(1)
@@ -122,8 +109,12 @@ def _build_brightness_row(parent):
     return row, slider, value_label
 
 
+# ---------------------------------------------------------------------------
+# App-level page (Preferences -> APC Mini Cart)
+# ---------------------------------------------------------------------------
+
 class ApcMiniCartSettings(SettingsPage):
-    """App-level page (Preferences -> APC Mini Cart)."""
+    """App-level preferences page for the plugin."""
 
     Name = QT_TRANSLATE_NOOP("SettingsPageName", "APC Mini Cart")
 
@@ -132,14 +123,26 @@ class ApcMiniCartSettings(SettingsPage):
         self.setLayout(QVBoxLayout())
         self.layout().setAlignment(Qt.AlignTop)
 
+        self._build_colors_group()
+        self._build_behavior_group()
+        self._build_brightness_group()
+        self._build_scene_group()
+        self._build_identify_group()
+
+        self.retranslateUi()
+
+    # -- group construction ------------------------------------------------
+
+    def _build_colors_group(self):
+        """Default colour combos for each cue state."""
         self.colorsGroup = QGroupBox(self)
         self.colorsGroup.setLayout(QFormLayout())
         self.layout().addWidget(self.colorsGroup)
 
-        self.idleCombo = _build_color_combo(self.colorsGroup, APP_LEVEL_PALETTE)
-        self.runningCombo = _build_color_combo(self.colorsGroup, APP_LEVEL_PALETTE)
-        self.pausedCombo = _build_color_combo(self.colorsGroup, APP_LEVEL_PALETTE)
-        self.errorCombo = _build_color_combo(self.colorsGroup, APP_LEVEL_PALETTE)
+        self.idleCombo = _build_combo(self.colorsGroup, APP_LEVEL_PALETTE)
+        self.runningCombo = _build_combo(self.colorsGroup, APP_LEVEL_PALETTE)
+        self.pausedCombo = _build_combo(self.colorsGroup, APP_LEVEL_PALETTE)
+        self.errorCombo = _build_combo(self.colorsGroup, APP_LEVEL_PALETTE)
 
         self.idleLabel = QLabel()
         self.runningLabel = QLabel()
@@ -152,16 +155,20 @@ class ApcMiniCartSettings(SettingsPage):
         form.addRow(self.pausedLabel, self.pausedCombo)
         form.addRow(self.errorLabel, self.errorCombo)
 
+    def _build_behavior_group(self):
+        """Global pad-press behaviour (toggle vs. retrigger)."""
         self.behaviorGroup = QGroupBox(self)
         self.behaviorGroup.setLayout(QFormLayout())
         self.layout().addWidget(self.behaviorGroup)
 
-        self.triggerModeCombo = _build_color_combo(
+        self.triggerModeCombo = _build_combo(
             self.behaviorGroup, GLOBAL_TRIGGER_MODE_CHOICES
         )
         self.triggerModeLabel = QLabel()
         self.behaviorGroup.layout().addRow(self.triggerModeLabel, self.triggerModeCombo)
 
+    def _build_brightness_group(self):
+        """Discrete brightness sliders for idle and running states."""
         self.brightnessGroup = QGroupBox(self)
         self.brightnessGroup.setLayout(QFormLayout())
         self.layout().addWidget(self.brightnessGroup)
@@ -183,6 +190,8 @@ class ApcMiniCartSettings(SettingsPage):
         bform.addRow(self.runningBrightnessLabel, runningRow)
         bform.addRow(self.brightnessHint)
 
+    def _build_scene_group(self):
+        """Scene Launch (row button) keylight toggle."""
         self.sceneGroup = QGroupBox(self)
         self.sceneGroup.setLayout(QVBoxLayout())
         self.layout().addWidget(self.sceneGroup)
@@ -194,6 +203,8 @@ class ApcMiniCartSettings(SettingsPage):
         self.sceneKeylightHint.setWordWrap(True)
         self.sceneGroup.layout().addWidget(self.sceneKeylightHint)
 
+    def _build_identify_group(self):
+        """The ``Flash grid`` smoke-test button."""
         self.identifyGroup = QGroupBox(self)
         self.identifyGroup.setLayout(QHBoxLayout())
         self.layout().addWidget(self.identifyGroup)
@@ -206,9 +217,10 @@ class ApcMiniCartSettings(SettingsPage):
         self.identifyHint.setWordWrap(True)
         self.identifyGroup.layout().addWidget(self.identifyHint, stretch=1)
 
-        self.retranslateUi()
+    # -- translation -------------------------------------------------------
 
     def retranslateUi(self):
+        """Re-apply translated labels. Called on construction and language change."""
         self.colorsGroup.setTitle(translate("ApcMiniCart", "Default LED colors"))
         self.idleLabel.setText(translate("ApcMiniCart", "Idle (cue present, stopped):"))
         self.runningLabel.setText(translate("ApcMiniCart", "Running:"))
@@ -244,7 +256,10 @@ class ApcMiniCartSettings(SettingsPage):
             "Only works while a Cart Layout session is active.",
         ))
 
+    # -- load / save -------------------------------------------------------
+
     def loadSettings(self, settings):
+        """Populate widgets from the plugin's persisted config dict."""
         colors = settings.get("colors", {}) if settings else {}
         _select_combo_value(self.idleCombo, colors.get("idle", DEFAULT_COLORS["idle"]))
         _select_combo_value(self.runningCombo, colors.get("running", DEFAULT_COLORS["running"]))
@@ -259,14 +274,15 @@ class ApcMiniCartSettings(SettingsPage):
         brightness = settings.get("brightness", {}) if settings else {}
         self.idleBrightnessSlider.setValue(brightness.get("idle", DEFAULT_BRIGHTNESS["idle"]))
         self.runningBrightnessSlider.setValue(brightness.get("running", DEFAULT_BRIGHTNESS["running"]))
-        # Force value-label refresh in case the slider was already at the loaded value
-        # (valueChanged only fires when the value actually changes).
+        # Force value-label refresh in case the slider was already at the
+        # loaded value (valueChanged only fires when the value changes).
         self.idleBrightnessValue.setText(BRIGHTNESS_LABELS[self.idleBrightnessSlider.value()])
         self.runningBrightnessValue.setText(BRIGHTNESS_LABELS[self.runningBrightnessSlider.value()])
 
         self.sceneKeylightCheck.setChecked((settings or {}).get("scene_keylight", True))
 
     def getSettings(self):
+        """Serialize the page's widgets back into a config dict."""
         return {
             "colors": {
                 "idle": self.idleCombo.currentData(),
@@ -282,7 +298,10 @@ class ApcMiniCartSettings(SettingsPage):
             "scene_keylight": self.sceneKeylightCheck.isChecked(),
         }
 
+    # -- actions -----------------------------------------------------------
+
     def _on_identify_clicked(self):
+        """Trigger the plugin's identify smoke test."""
         try:
             plugin = get_plugin("ApcMiniCart")
         except Exception:
@@ -290,8 +309,12 @@ class ApcMiniCartSettings(SettingsPage):
         plugin.identify()
 
 
+# ---------------------------------------------------------------------------
+# Per-cue page (APC Mini tab on each cue's edit dialog)
+# ---------------------------------------------------------------------------
+
 class ApcMiniCartCueSettings(SettingsPage):
-    """Per-cue page added to every cue's edit dialog."""
+    """Per-cue overrides: idle colour and pad-press action."""
 
     Name = QT_TRANSLATE_NOOP("SettingsPageName", "APC Mini")
 
@@ -305,11 +328,11 @@ class ApcMiniCartCueSettings(SettingsPage):
         self.layout().addWidget(self.group)
 
         self.colorLabel = QLabel()
-        self.colorCombo = _build_color_combo(self.group, PALETTE_CHOICES)
+        self.colorCombo = _build_combo(self.group, PALETTE_CHOICES)
         self.group.layout().addRow(self.colorLabel, self.colorCombo)
 
         self.triggerModeLabel = QLabel()
-        self.triggerModeCombo = _build_color_combo(self.group, CUE_TRIGGER_MODE_CHOICES)
+        self.triggerModeCombo = _build_combo(self.group, CUE_TRIGGER_MODE_CHOICES)
         self.group.layout().addRow(self.triggerModeLabel, self.triggerModeCombo)
 
         self.hint = QLabel(self)
@@ -319,6 +342,7 @@ class ApcMiniCartCueSettings(SettingsPage):
         self.retranslateUi()
 
     def retranslateUi(self):
+        """Re-apply translated labels."""
         self.group.setTitle(translate("ApcMiniCart", "Pad behavior"))
         self.colorLabel.setText(translate("ApcMiniCart", "Idle color:"))
         self.triggerModeLabel.setText(translate("ApcMiniCart", "Pad action:"))
@@ -330,13 +354,20 @@ class ApcMiniCartCueSettings(SettingsPage):
         ))
 
     def enableCheck(self, enabled):
+        """Toggle the group's enabled state from LiSP's cue-settings UI."""
         self.setGroupEnabled(self.group, enabled)
 
     def loadSettings(self, settings):
+        """Populate combos from a cue's persisted properties."""
         _select_combo_value(self.colorCombo, settings.get("apc_idle_color"))
         _select_combo_value(self.triggerModeCombo, settings.get("apc_trigger_mode"))
 
     def getSettings(self):
+        """Serialize combo selections back into cue properties.
+
+        Returns an empty dict when the group is disabled so LiSP doesn't
+        overwrite the cue's existing values.
+        """
         if not self.isGroupEnabled(self.group):
             return {}
         return {

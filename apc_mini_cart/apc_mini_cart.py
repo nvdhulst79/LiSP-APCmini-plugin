@@ -1,3 +1,19 @@
+"""Akai APC Mini mk2 <-> LiSP Cart Layout bridge.
+
+The plugin wires the APC's 8x8 pad grid to the currently visible cart page:
+
+* Pad press      -> fire the cue at that (row, col) on the current page.
+* Cue state      -> pad LED (idle / running / paused / error), with the APC
+                    handling pulse/blink animations on-board.
+* Faders         -> per-row volume / pan with soft takeover; the row is picked
+                    with a Scene Launch button (Shift selects pan mode).
+* Preferences    -> default colours, brightness, and pad-press behavior.
+* Per-cue tab    -> per-cart idle-colour and trigger-mode overrides.
+
+Activation is tied to having a Cart Layout session loaded; any other layout
+silently disables the plugin (LEDs cleared, MIDI handler detached).
+"""
+
 import logging
 from threading import Thread
 
@@ -13,88 +29,68 @@ from lisp.plugins.cart_layout.layout import CartLayout
 from lisp.ui.settings.app_configuration import AppConfigurationDialog
 from lisp.ui.settings.cue_settings import CueSettingsRegistry
 
-from .settings import (
-    ApcMiniCartCueSettings,
-    ApcMiniCartSettings,
+from .constants import (
+    APC_CHANNEL,
+    APC_FADER_CCS,
+    APC_GRID_NOTES,
+    APC_SCENE_NOTES,
+    APC_SHIFT_NOTE,
+    BEHAVIOR_BLINK_SIXTEENTH,
+    BEHAVIOR_FULL,
+    BEHAVIOR_PULSE_QUARTER,
+    COLOR_WHITE,
     DEFAULT_BRIGHTNESS,
     DEFAULT_COLORS,
+    GRID_COLS,
+    GRID_ROWS,
+    HUNT_ARMED_COLOR,
+    HUNT_BEHAVIOR,
+    HUNT_DOWN_COLOR,
+    HUNT_UP_COLOR,
+    IDENTIFY_MS,
+    LED_OFF,
+    PAN_CENTER_CC,
+    PAN_CENTER_TOL,
+    ROW_MODE_PAN,
+    ROW_MODE_VOLUME,
+    SCENE_BRIGHT_CHANNEL,
+    SCENE_DIM_CHANNEL,
+    SCENE_LED_BLINK,
+    SCENE_LED_OFF,
+    SCENE_LED_ON,
     TRIGGER_MODE_DEFAULT,
+    VOLUME_CC_MAX,
 )
+from .settings import ApcMiniCartCueSettings, ApcMiniCartSettings
 
 logger = logging.getLogger(__name__)
 
-APC_GRID_NOTES = range(0, 64)
-APC_CHANNEL = 0
 
-# Scene Launch buttons (right of grid), single-color green. Assumed top-to-bottom:
-# 0x70 = top row, 0x77 = bottom. Verify against hardware; flip _scene_note_to_row
-# if reversed. LEDs accept VV = 0 (off), 1 (on), 2 (blink).
-APC_SCENE_NOTES = range(0x70, 0x78)
-APC_SHIFT_NOTE = 0x7A
-
-# Faders 1-8 send CC 0x30..0x37; master at 0x38 is intentionally unmapped.
-APC_FADER_CCS = range(0x30, 0x38)
-
-SCENE_LED_OFF = 0
-SCENE_LED_ON = 1
-SCENE_LED_BLINK = 2
-
-# Scene Launch "keylight" brightness nibbles (the Note-On channel, as for
-# pads). Used when scene_keylight is on so every row button stays findable in
-# the dark: unselected rows glow dim, the selected (volume-mode) row is bright,
-# pan-mode selected blinks. Relies on the scene LEDs honoring the brightness
-# nibble — if a given unit ignores it (dim == bright, can't tell the selected
-# row in volume mode), turn scene_keylight off to fall back to "lit only when
-# selected".
-SCENE_DIM_CHANNEL = 1     # 25% solid - unselected but findable
-SCENE_BRIGHT_CHANNEL = 6  # 100% solid - selected, volume mode
-
-# APC mk2 LED behavior nibbles (Note-On channel).
-BEHAVIOR_DIM = 0               # 10% solid
-BEHAVIOR_FULL = 6              # 100% solid
-BEHAVIOR_PULSE_QUARTER = 9     # pulse 1/4
-BEHAVIOR_BLINK_SIXTEENTH = 12  # blink 1/16
-
-COLOR_OFF = 0
-COLOR_WHITE = 3
-
-LED_OFF = (BEHAVIOR_DIM, COLOR_OFF)
-
-IDENTIFY_MS = 1000
-
-# Fader modes (per selected row).
-ROW_MODE_VOLUME = "volume"
-ROW_MODE_PAN = "pan"
-
-# Volume mapping: CC 0..127 -> 0.0..1.0 (unity). Operators who need >unity
-# should set the cue's baseline volume higher and ride it down with the fader.
-VOLUME_CC_MAX = 1.0
-
-# Pan mapping: CC 0..127 -> -1.0..+1.0 with center at CC 64. Sliders within
-# +/- PAN_CENTER_TOL of CC 64 snap to exactly 0.0 (poor-man's center detent
-# for the non-motorized faders).
-PAN_CENTER_CC = 64
-PAN_CENTER_TOL = 1
-
-# Soft-takeover hunting indicator. Painted only on mappable pads in the
-# selected row while their fader is unlatched. Slow "breathing" pulse (1/2,
-# slower than the 1/4 pulse used for paused) plus a color that tells the
-# operator which way to move the fader to catch the stored value:
-#   - armed but untouched (position unknown): white
-#   - fader below the value -> push UP:        blue
-#   - fader above the value -> pull DOWN:       magenta
-# On catch (latch) the pad snaps back to its normal cue-state color.
-HUNT_BEHAVIOR = 10        # pulse 1/2
-HUNT_ARMED_COLOR = 3      # white
-HUNT_UP_COLOR = 45        # blue
-HUNT_DOWN_COLOR = 53      # magenta
-
+# ---------------------------------------------------------------------------
+# Coordinate helpers
+# ---------------------------------------------------------------------------
+#
+# Cart Layout indexes (row, col) with (0, 0) at the top-left of the grid.
+# The APC numbers its pads from the bottom-left, so the two systems are
+# mirrored on the row axis only.
 
 def _pad_to_note(row, col):
+    """Cart (row, col) -> APC MIDI note number."""
     return (7 - row) * 8 + col
 
 
+def _note_to_pad(note):
+    """APC MIDI note number -> Cart (row, col)."""
+    return 7 - (note // 8), note % 8
+
+
+# ---------------------------------------------------------------------------
+# Plugin
+# ---------------------------------------------------------------------------
+
 class ApcMiniCart(Plugin):
+    """Plug-and-play APC Mini mk2 integration for the LiSP Cart Layout."""
+
     Name = "APC Mini Cart"
     Authors = ("Niels van der Hulst",)
     Description = "Plug-and-play Akai APC Mini mk2 control for the Cart Layout."
@@ -103,10 +99,12 @@ class ApcMiniCart(Plugin):
     def __init__(self, app):
         super().__init__(app)
         self._midi = get_plugin("Midi")
-        self._active = False
-        self._identify_active = False
-        self._cue_to_pad = {}     # id(cue) -> (row, col)
-        self._tracked_cues = []   # keep refs alive; Signal uses weakrefs
+
+        # Runtime state.
+        self._active = False           # bound to a CartLayout session?
+        self._identify_active = False  # smoke-test flash in progress?
+        self._cue_to_pad = {}          # id(cue) -> (row, col) on visible page
+        self._tracked_cues = []        # strong refs; Signal slots are weakref'd
 
         # Fader state. Only meaningful while a row is selected. _current_mode
         # resets to volume on every fresh row selection (pan is the non-default
@@ -114,14 +112,16 @@ class ApcMiniCart(Plugin):
         # last seen physical CC value per column; -1 = unknown until first move.
         self._selected_row = None
         self._current_mode = ROW_MODE_VOLUME
-        self._slider_latched = [False] * 8
-        self._slider_position = [-1] * 8
+        self._slider_latched = [False] * GRID_COLS
+        self._slider_position = [-1] * GRID_COLS
         self._shift_held = False
 
-        # Per-cue settings. None = "use the plugin-wide default".
+        # Per-cue properties (None = "use the plugin-wide default").
+        # Registered on the class so they serialize with the session file.
         Cue.apc_idle_color = Property(default=None)
         Cue.apc_trigger_mode = Property(default=None)
 
+        # Settings pages.
         AppConfigurationDialog.registerSettingsPage(
             "plugins.apc_mini_cart",
             ApcMiniCartSettings,
@@ -129,54 +129,70 @@ class ApcMiniCart(Plugin):
         )
         CueSettingsRegistry().add(ApcMiniCartCueSettings)
 
+        # Session lifecycle. Use QtQueued so handlers always run on the
+        # Qt thread regardless of which thread fired the signal.
         self.app.session_created.connect(self._on_session_change, Connection.QtQueued)
         self.app.session_loaded.connect(self._on_session_change, Connection.QtQueued)
         self.app.session_before_finalize.connect(self._on_session_finalize, Connection.QtQueued)
 
-        # Repaint when the user changes default colors in Preferences.
+        # Repaint when the user changes preferences.
         ApcMiniCart.Config.changed.connect(self._on_config_changed)
         ApcMiniCart.Config.updated.connect(self._on_config_changed)
 
-    # ---- session / layout lifecycle ------------------------------------
+    # ------------------------------------------------------------------ #
+    # Session / layout lifecycle                                         #
+    # ------------------------------------------------------------------ #
 
     def _on_session_change(self, *_):
+        """Activate or deactivate depending on the current layout type."""
         if isinstance(self.app.layout, CartLayout):
             self._activate()
         else:
             self._deactivate()
 
     def _on_session_finalize(self, *_):
+        """Always tear down before a session is unloaded."""
         self._deactivate()
 
     def _activate(self):
+        """Subscribe to MIDI + model events and paint the visible page."""
         if self._active:
             return
         self._active = True
+
         self._midi.input.new_message.connect(self._on_midi_message, Connection.QtQueued)
+
         model = self.app.layout.model
         model.item_added.connect(self._on_model_changed, Connection.QtQueued)
         model.item_removed.connect(self._on_model_changed, Connection.QtQueued)
         model.item_moved.connect(self._on_model_changed, Connection.QtQueued)
         model.model_reset.connect(self._on_model_changed, Connection.QtQueued)
+
         self.app.layout.view.currentChanged.connect(self._on_page_changed)
+
         self._paint_scene_leds()
         self._rebind_current_page()
         logger.info("APC Mini Cart: activated (Cart Layout detected).")
 
     def _deactivate(self):
+        """Detach all signals, blank the grid, and reset state."""
         if not self._active:
             return
+
         self._unbind_cues()
+
         try:
             self.app.layout.view.currentChanged.disconnect(self._on_page_changed)
         except (TypeError, RuntimeError):
             pass
+
         model = self.app.layout.model
         for signal in (
             model.item_added, model.item_removed,
             model.item_moved, model.model_reset,
         ):
             signal.disconnect(self._on_model_changed)
+
         self._midi.input.new_message.disconnect(self._on_midi_message)
         self._clear_all_pads()
         self._clear_scene_leds()
@@ -187,9 +203,23 @@ class ApcMiniCart(Plugin):
         self._active = False
         logger.info("APC Mini Cart: deactivated.")
 
-    # ---- inbound MIDI dispatch -----------------------------------------
+    def _on_config_changed(self, *_):
+        """Repaint when colours/brightness/keylight change in Preferences."""
+        if self._active and not self._identify_active:
+            self._rebind_current_page()
+            self._paint_scene_leds()  # picks up scene_keylight changes
+
+    # ------------------------------------------------------------------ #
+    # Inbound MIDI dispatch                                              #
+    # ------------------------------------------------------------------ #
 
     def _on_midi_message(self, message):
+        """Route an inbound message to the grid, scene, shift, or fader handler.
+
+        Everything is gated on channel 0. Grid pads fire cues, Scene Launch
+        notes select a fader row, the Shift note tracks its held state, and
+        the eight mapped fader CCs drive volume/pan.
+        """
         if message.channel != APC_CHANNEL:
             return
         if message.type == "note_on":
@@ -208,11 +238,16 @@ class ApcMiniCart(Plugin):
             if cc in APC_FADER_CCS:
                 self._handle_fader(cc - APC_FADER_CCS[0], message.value)
 
-    # ---- inbound: pad press -> cue.execute -----------------------------
+    # ------------------------------------------------------------------ #
+    # Inbound: pad press -> cue dispatch                                #
+    # ------------------------------------------------------------------ #
 
     def _handle_grid_press(self, note):
-        row = 7 - (note // 8)
-        col = note % 8
+        """Fire the cue at the pressed pad's (row, col) on the current page.
+
+        Empty pads (no cue at that coordinate) are silently logged at DEBUG.
+        """
+        row, col = _note_to_pad(note)
         page = self.app.layout.current_page()
 
         try:
@@ -234,54 +269,76 @@ class ApcMiniCart(Plugin):
         else:
             cue.execute()
 
-    @staticmethod
-    def _retrigger(cue):
-        # cue.interrupt() and cue.start() are both @async_function in LiSP —
-        # each spawns its own thread and returns immediately. Calling them
-        # back-to-back races: start() often wins the state lock first, sees
-        # the cue is still running, and silently returns. We bypass the
-        # decorator (via __wrapped__) and run both bodies sequentially on
-        # one thread so the interrupt always finishes before start runs.
-        cls = type(cue)
-        def task():
-            cls.interrupt.__wrapped__(cue)
-            cls.start.__wrapped__(cue)
-        Thread(target=task, name=f"apc-retrigger-{id(cue):x}", daemon=True).start()
-
     def _trigger_mode_for(self, cue):
+        """Resolve the effective trigger mode for ``cue``.
+
+        Per-cue override wins; otherwise the global Config value; otherwise
+        the hardcoded default.
+        """
         per_cue = getattr(cue, "apc_trigger_mode", None)
         if per_cue:
             return per_cue
         return self.Config.get("trigger_mode", TRIGGER_MODE_DEFAULT)
 
-    # ---- outbound: LED feedback ----------------------------------------
+    @staticmethod
+    def _retrigger(cue):
+        """Interrupt then restart ``cue`` on a single worker thread.
+
+        ``cue.interrupt()`` and ``cue.start()`` are both decorated with
+        ``@async_function`` in LiSP — each spawns its own thread and returns
+        immediately. Calling them back-to-back races on the cue state lock:
+        ``start()`` often wins, sees the cue still running, and silently
+        returns. We bypass the decorator (via ``__wrapped__``) and run both
+        bodies sequentially on one thread so interrupt-then-start is ordered
+        correctly. See [[project_lisp_async_function]].
+        """
+        cls = type(cue)
+
+        def task():
+            cls.interrupt.__wrapped__(cue)
+            cls.start.__wrapped__(cue)
+
+        Thread(target=task, name=f"apc-retrigger-{id(cue):x}", daemon=True).start()
+
+    # ------------------------------------------------------------------ #
+    # Outbound: LED feedback                                            #
+    # ------------------------------------------------------------------ #
 
     def _on_page_changed(self, _index):
+        """Cart page changed -> re-arm soft takeover and repaint."""
         self._invalidate_page_bindings()
 
     def _on_model_changed(self, *_):
+        """Cue added/removed/moved -> re-arm soft takeover and repaint."""
         self._invalidate_page_bindings()
 
     def _invalidate_page_bindings(self):
-        # Cues under the selected row may have changed (or the row itself
-        # is empty now); re-arm soft takeover and repaint.
+        """Re-arm soft takeover and rebind/repaint the visible page.
+
+        Cues under the selected row may have changed (or the row itself is
+        empty now), so latches are reset before the repaint.
+        """
         self._reset_fader_latches()
         self._rebind_current_page()
 
-    def _on_config_changed(self, *_):
-        if self._active and not self._identify_active:
-            self._rebind_current_page()
-            self._paint_scene_leds()  # picks up scene_keylight changes
-
     def _rebind_current_page(self):
+        """Disconnect all cue handlers, clear the grid, then rebind+paint.
+
+        Re-subscribing the whole visible page on every model event (rather
+        than diffing) is intentional: 64 pads is trivial, and it sidesteps
+        a class of bugs around stale ``cue -> (row, col)`` entries after
+        moves/reorders.
+        """
         if self._identify_active:
             return
+
         self._unbind_cues()
         self._clear_all_pads()
+
         page = self.app.layout.current_page()
         model = self.app.layout.model
-        for row in range(8):
-            for col in range(8):
+        for row in range(GRID_ROWS):
+            for col in range(GRID_COLS):
                 try:
                     cue = model.item((page, row, col))
                 except IndexError:
@@ -290,6 +347,7 @@ class ApcMiniCart(Plugin):
                 self._paint_cue(cue)
 
     def _bind_cue(self, cue, row, col):
+        """Subscribe to ``cue``'s lifecycle + property signals."""
         self._cue_to_pad[id(cue)] = (row, col)
         self._tracked_cues.append(cue)
         for signal in (
@@ -300,6 +358,7 @@ class ApcMiniCart(Plugin):
         cue.property_changed.connect(self._on_cue_property_changed, Connection.QtQueued)
 
     def _unbind_cues(self):
+        """Reverse :meth:`_bind_cue` for every tracked cue."""
         for cue in self._tracked_cues:
             for signal in (
                 cue.started, cue.stopped, cue.paused,
@@ -307,24 +366,32 @@ class ApcMiniCart(Plugin):
             ):
                 try:
                     signal.disconnect(self._on_cue_state_changed)
-                except Exception:
+                except (TypeError, RuntimeError, ValueError):
                     pass
             try:
                 cue.property_changed.disconnect(self._on_cue_property_changed)
-            except Exception:
+            except (TypeError, RuntimeError, ValueError):
                 pass
         self._tracked_cues.clear()
         self._cue_to_pad.clear()
 
     def _on_cue_state_changed(self, cue):
+        """A cue's lifecycle signal fired -> repaint its pad."""
         if id(cue) in self._cue_to_pad:
             self._paint_cue(cue)
 
     def _on_cue_property_changed(self, cue, name, _value):
+        """Repaint only when the per-cue idle-colour override actually changes.
+
+        ``property_changed`` fires for *every* property write (name, fade
+        times, everything), so filter aggressively to avoid 64 repaints
+        whenever the user types in another field.
+        """
         if name == "apc_idle_color" and id(cue) in self._cue_to_pad:
             self._paint_cue(cue)
 
     def _paint_cue(self, cue):
+        """Send the (behavior, color) pair appropriate for ``cue``'s pad."""
         if self._identify_active:
             return
         pad = self._cue_to_pad.get(id(cue))
@@ -335,8 +402,11 @@ class ApcMiniCart(Plugin):
         self._send_pad(_pad_to_note(row, col), behavior, color)
 
     def _led_for_pad(self, cue, row, col):
-        # While a row is selected, its mappable pads show the hunting indicator
-        # until their fader latches; everything else uses the normal cue state.
+        """Resolve a pad's (behavior, color), accounting for fader hunting.
+
+        While a row is selected, its mappable pads show the hunting indicator
+        until their fader latches; everything else uses the normal cue state.
+        """
         if self._selected_row == row and not self._slider_latched[col]:
             element = self._fader_element(cue, self._current_mode)
             if element is not None:
@@ -344,6 +414,7 @@ class ApcMiniCart(Plugin):
         return self._led_for_cue(cue)
 
     def _hunting_led(self, element, col):
+        """Soft-takeover indicator: which way to move the fader to catch the value."""
         pos = self._slider_position[col]
         if pos < 0:
             # Fader not touched since arming: position unknown, no direction yet.
@@ -357,6 +428,7 @@ class ApcMiniCart(Plugin):
         return (HUNT_BEHAVIOR, color)
 
     def _led_for_cue(self, cue):
+        """Resolve a cue's current state to a (behavior, color) tuple."""
         state = cue.state
         if state & CueState.Error:
             return (BEHAVIOR_BLINK_SIXTEENTH, self._color("error"))
@@ -364,22 +436,31 @@ class ApcMiniCart(Plugin):
             return (BEHAVIOR_PULSE_QUARTER, self._color("paused"))
         if state & CueState.IsRunning:
             return (self._brightness("running"), self._color("running"))
+        # Idle — per-cue override beats the global default.
         per_cue = getattr(cue, "apc_idle_color", None)
         idle = per_cue if per_cue is not None else self._color("idle")
         return (self._brightness("idle"), idle)
 
     def _color(self, key):
+        """Look up a state colour (Preferences -> hardcoded default)."""
         return self.Config.get(f"colors.{key}", DEFAULT_COLORS[key])
 
     def _brightness(self, key):
+        """Look up a state brightness nibble (Preferences -> default)."""
         return self.Config.get(f"brightness.{key}", DEFAULT_BRIGHTNESS[key])
 
     def _clear_all_pads(self):
+        """Blank all 64 pads (used on deactivate and before rebind)."""
         behavior, color = LED_OFF
         for note in APC_GRID_NOTES:
             self._send_pad(note, behavior, color)
 
     def _send_pad(self, note, behavior, color):
+        """Send a single Note-On to the APC, encoding LED state.
+
+        The APC encodes pad LED state in three fields: ``channel`` = behavior
+        nibble, ``note`` = pad index, ``velocity`` = colour palette index.
+        """
         try:
             self._midi.output.send(
                 mido.Message(
@@ -389,9 +470,18 @@ class ApcMiniCart(Plugin):
         except Exception:
             logger.exception("APC Mini Cart: failed to send pad LED.")
 
-    # ---- identify (UI smoke test) --------------------------------------
+    # ------------------------------------------------------------------ #
+    # Identify (UI smoke test)                                          #
+    # ------------------------------------------------------------------ #
 
     def identify(self):
+        """Flash every pad solid white for ``IDENTIFY_MS`` ms.
+
+        Used as a "is the cable plugged into the right port?" smoke test from
+        the Preferences page. While the flash is active ``_paint_cue`` and
+        ``_rebind_current_page`` no-op so concurrent cue events don't fight
+        the all-white write.
+        """
         if not self._active:
             logger.info("APC Mini Cart: identify ignored, plugin not active.")
             return
@@ -401,15 +491,19 @@ class ApcMiniCart(Plugin):
         QTimer.singleShot(IDENTIFY_MS, self._identify_finish)
 
     def _identify_finish(self):
+        """Restore normal grid state after the identify flash window."""
         self._identify_active = False
         if self._active:
             self._rebind_current_page()
         else:
             self._clear_all_pads()
 
-    # ---- faders: row selection + soft takeover -------------------------
+    # ------------------------------------------------------------------ #
+    # Faders: row selection + soft takeover                             #
+    # ------------------------------------------------------------------ #
 
     def _handle_scene_press(self, note):
+        """Select / cycle the fader row from a Scene Launch button press."""
         row = self._scene_note_to_row(note)
         prev_row, prev_mode = self._selected_row, self._current_mode
         if self._selected_row == row:
@@ -437,10 +531,13 @@ class ApcMiniCart(Plugin):
         self._warn_if_pan_unavailable(prev_row, prev_mode)
 
     def _warn_if_pan_unavailable(self, prev_row, prev_mode):
-        # Only when this press freshly *enters* pan mode for a row, and not a
-        # single cue in that row has an Audio Pan element. AudioPan is not in
-        # LiSP's default GStreamer pipeline, so this is the common "pan does
-        # nothing" footgun. Surfaces in the status bar + log viewer.
+        """Warn when pan mode is freshly entered for a row that can't pan.
+
+        Only when this press freshly *enters* pan mode for a row, and not a
+        single cue in that row has an Audio Pan element. AudioPan is not in
+        LiSP's default GStreamer pipeline, so this is the common "pan does
+        nothing" footgun. Surfaces in the status bar + log viewer.
+        """
         entered_pan = (
             self._selected_row is not None
             and self._current_mode == ROW_MODE_PAN
@@ -455,9 +552,10 @@ class ApcMiniCart(Plugin):
             )
 
     def _row_has_pan(self, row):
+        """True if any cue in ``row`` on the current page has an AudioPan element."""
         page = self.app.layout.current_page()
         model = self.app.layout.model
-        for col in range(8):
+        for col in range(GRID_COLS):
             try:
                 cue = model.item((page, row, col))
             except IndexError:
@@ -467,6 +565,7 @@ class ApcMiniCart(Plugin):
         return False
 
     def _handle_fader(self, col, cc_value):
+        """Apply a fader CC to the selected row's cue at ``col`` (soft takeover)."""
         if self._selected_row is None:
             return
         row = self._selected_row
@@ -517,18 +616,23 @@ class ApcMiniCart(Plugin):
         self._slider_position[col] = cc_value
 
     def _reset_fader_latches(self):
-        for i in range(8):
+        """Drop every fader's latch + last-known position (re-arms soft takeover)."""
+        for i in range(GRID_COLS):
             self._slider_latched[i] = False
             self._slider_position[i] = -1
 
     def _repaint_tracked(self):
-        # Repaint every bound pad so hunting indicators appear on the newly
-        # selected row and clear from any previously selected one.
+        """Repaint every bound pad.
+
+        Used after a row change so hunting indicators appear on the newly
+        selected row and clear from any previously selected one.
+        """
         for cue in self._tracked_cues:
             self._paint_cue(cue)
 
     @staticmethod
     def _fader_element(cue, mode):
+        """Return the cue's Volume / AudioPan media element for ``mode``, or None."""
         media = getattr(cue, "media", None)
         if media is None or not hasattr(media, "element"):
             return None
@@ -538,12 +642,14 @@ class ApcMiniCart(Plugin):
 
     @staticmethod
     def _read_property(element, mode):
+        """Read the current volume / pan value off a media element."""
         if mode == ROW_MODE_VOLUME:
             return float(element.live_volume)
         return float(element.pan)
 
     @staticmethod
     def _write_property(element, mode, value):
+        """Write a volume / pan value to a media element."""
         if mode == ROW_MODE_VOLUME:
             element.live_volume = value
         else:
@@ -551,6 +657,7 @@ class ApcMiniCart(Plugin):
 
     @staticmethod
     def _value_to_cc(value, mode):
+        """Map a volume (0..1) or pan (-1..1) value to a CC position (0..127)."""
         if mode == ROW_MODE_VOLUME:
             v = max(0.0, min(VOLUME_CC_MAX, value))
             return int(round(v / VOLUME_CC_MAX * 127))
@@ -563,6 +670,7 @@ class ApcMiniCart(Plugin):
 
     @staticmethod
     def _cc_to_value(cc, mode):
+        """Map a CC position (0..127) to a volume (0..1) or pan (-1..1) value."""
         if mode == ROW_MODE_VOLUME:
             return cc / 127.0 * VOLUME_CC_MAX
         if abs(cc - PAN_CENTER_CC) <= PAN_CENTER_TOL:
@@ -571,23 +679,31 @@ class ApcMiniCart(Plugin):
             return (cc - PAN_CENTER_CC) / PAN_CENTER_CC  # -1.0 .. 0
         return (cc - PAN_CENTER_CC) / (127 - PAN_CENTER_CC)  # 0 .. +1.0
 
-    # ---- Scene Launch LEDs ---------------------------------------------
+    # ------------------------------------------------------------------ #
+    # Scene Launch LEDs                                                  #
+    # ------------------------------------------------------------------ #
 
     @staticmethod
     def _scene_note_to_row(note):
-        # Assumes Scene Launch 1 (top) = note 0x70; flip this mapping if
-        # hardware test shows the buttons are numbered bottom-up.
+        """Map a Scene Launch note to a grid row.
+
+        Assumes Scene Launch 1 (top) = note 0x70; flip this mapping if a
+        hardware test shows the buttons are numbered bottom-up.
+        """
         return note - APC_SCENE_NOTES[0]
 
     def _paint_scene_leds(self):
+        """Repaint all Scene Launch LEDs for the current selection + keylight."""
         keylight = bool(self.Config.get("scene_keylight", True))
-        for row in range(8):
+        for row in range(GRID_ROWS):
             channel, velocity = self._scene_led_params(row, keylight)
             self._send_scene_led(row, channel, velocity)
 
     def _scene_led_params(self, row, keylight):
-        # (channel, velocity) for one Scene Launch LED. Channel = behavior/
-        # brightness nibble; velocity = 0 off / 1 on / 2 blink.
+        """Return (channel, velocity) for one Scene Launch LED.
+
+        Channel = behavior/brightness nibble; velocity = 0 off / 1 on / 2 blink.
+        """
         if row == self._selected_row:
             if self._current_mode == ROW_MODE_PAN:
                 return (APC_CHANNEL, SCENE_LED_BLINK)
@@ -599,10 +715,12 @@ class ApcMiniCart(Plugin):
         return (APC_CHANNEL, SCENE_LED_OFF)
 
     def _clear_scene_leds(self):
-        for row in range(8):
+        """Blank all Scene Launch LEDs."""
+        for row in range(GRID_ROWS):
             self._send_scene_led(row, APC_CHANNEL, SCENE_LED_OFF)
 
     def _send_scene_led(self, row, channel, velocity):
+        """Send a single Scene Launch Note-On (channel = brightness, velocity = state)."""
         try:
             self._midi.output.send(
                 mido.Message(

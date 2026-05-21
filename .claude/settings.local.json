@@ -23,13 +23,16 @@
       "Bash(git rm *)",
       "Bash(cat ~/.config/LinuxShowPlayer/0.6/apc_mini_cart.json 2>&1)",
       "Read(//home/niels/.config/LinuxShowPlayer/0.6/**)",
-      "WebFetch(domain:packages.debian.org)",
-      "Bash(gh search *)",
-      "PowerShell(gh search code 'from PyQt5' --repo FrancescoCeruti/linux-show-player --limit 50 --json path,textMatches)",
-      "WebFetch(domain:grep.app)",
-      "Bash(ls ../ 2>&1 | head -20; ls ~/dev/linux-show-player 2>&1 | head -5)",
-      "Read(//c/Github/**)",
-      "Read(//c/Users/nvdhulst/dev/**)"
+      "Bash(poetry run *)",
+      "Bash(python3 -m py_compile apc_mini_cart/constants.py apc_mini_cart/apc_mini_cart.py apc_mini_cart/settings.py)",
+      "Bash(poetry env *)",
+      "Bash(~/.cache/pypoetry/virtualenvs/linux-show-player-2C36I8qN-py3.12/bin/python -c \"import sys; sys.path.insert\\(0, '/home/niels/dev/linux-show-player'\\); from lisp.plugins.apc_mini_cart import ApcMiniCart; from lisp.plugins.apc_mini_cart.settings import ApcMiniCartSettings, ApcMiniCartCueSettings; from lisp.plugins.apc_mini_cart.constants import PALETTE_CHOICES, DEFAULT_COLORS, IDENTIFY_MS; print\\('OK', ApcMiniCart.Name\\)\")",
+      "Bash(git fetch *)",
+      "Bash(git ls-tree *)",
+      "Bash(git tag *)",
+      "Bash(git reset *)",
+      "Bash(grep -oE '\\\\b[A-Z][A-Z0-9_]{2,}\\\\b' apc_mini_cart/apc_mini_cart.py)",
+      "Read(//tmp/**)"
     ]
   }
 }
