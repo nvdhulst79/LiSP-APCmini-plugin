@@ -400,6 +400,7 @@ class ApcMiniCart(Plugin):
 
     def _handle_scene_press(self, note):
         row = self._scene_note_to_row(note)
+        prev_row, prev_mode = self._selected_row, self._current_mode
         if self._selected_row == row:
             # Re-press of the currently selected row.
             if self._shift_held:
@@ -422,6 +423,37 @@ class ApcMiniCart(Plugin):
         self._reset_fader_latches()
         self._repaint_tracked()
         self._paint_scene_leds()
+        self._warn_if_pan_unavailable(prev_row, prev_mode)
+
+    def _warn_if_pan_unavailable(self, prev_row, prev_mode):
+        # Only when this press freshly *enters* pan mode for a row, and not a
+        # single cue in that row has an Audio Pan element. AudioPan is not in
+        # LiSP's default GStreamer pipeline, so this is the common "pan does
+        # nothing" footgun. Surfaces in the status bar + log viewer.
+        entered_pan = (
+            self._selected_row is not None
+            and self._current_mode == ROW_MODE_PAN
+            and (prev_row != self._selected_row or prev_mode != ROW_MODE_PAN)
+        )
+        if entered_pan and not self._row_has_pan(self._selected_row):
+            logger.warning(
+                "APC Mini Cart: pan mode has no effect — no cue in this row "
+                "has an Audio Pan element. Add 'Audio Pan' to the pipeline in "
+                "Preferences → GStreamer (new cues) or in the cue's media "
+                "settings (existing cues)."
+            )
+
+    def _row_has_pan(self, row):
+        page = self.app.layout.current_page()
+        model = self.app.layout.model
+        for col in range(8):
+            try:
+                cue = model.item((page, row, col))
+            except IndexError:
+                continue
+            if self._fader_element(cue, ROW_MODE_PAN) is not None:
+                return True
+        return False
 
     def _handle_fader(self, col, cc_value):
         if self._selected_row is None:
