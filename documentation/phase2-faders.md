@@ -62,27 +62,11 @@ LiSP exposes per-cue stereo balance via the `AudioPan` GstMediaElement ([../linu
 
 No new persistent (session-file) state. Cue **pan** is the existing serialized `panorama` property; cue **volume** rides the existing serialized baseline `volume` property (the plugin originally rode the runtime `live_volume`, but that's reset to baseline on every cue stop and isn't saved — so a fader move was lost on replay; switched to the baseline `volume` on 2026-05-21).
 
-## Cue-side compatibility
 
-Neither volume nor pan is uniform across cue types — needs re-verifying when work begins:
+## Possible improvements
 
-- **Volume.** `MediaCue` exposes volume via its `MediaElement` chain (typically `Volume` element). `CollectionCue`, `CommandCue`, control cues, etc. have no volume concept.
-- **Pan.** `MediaCue` *may* have `AudioPan` in its pipeline — needs verifying whether it's added by default or opt-in per cue. Even on a MediaCue, pan can be absent.
-- The plugin should detect mappability per cue, **per mode**. A cue can be mappable in volume mode and not in pan mode (or vice versa, though that's unlikely). For unmappable cells, the slider stays inactive and the pad LED shows the "unmappable" indicator (likely: cue's normal idle color, no hunting pattern — sliders simply don't engage when that pad is in the selected row in that mode).
-
-## Out of scope for this round
-
-- **Per-cue "lock from fader" toggle** (operator marks a cue as not-fader-controllable). Niche; skip until asked.
-- **Track Buttons** (the 8 buttons below the grid, notes `0x64–0x6B`) — no use case yet; leave unmapped.
-- **Shift modal combos** — orthogonal feature; carry separately.
-
-## Open questions for implementation time
-
-1. **Scene Launch row ordering.** Primer lists "Scene Launch 1–8" notes `0x70–0x77` but does not specify whether button 1 is top or bottom. Verify against hardware; the Akai protocol PDF is the authority.
-2. ~~**Hunting indicator encoding** (hue shift vs. behavior nibble).~~ **Resolved 2026-05-21:** direction-by-color (white armed / blue push-up / magenta pull-down, slow pulse) — see the soft-takeover section above. Remaining sub-question for hardware: are blue/magenta legible enough at a glance in a dark booth, and is blue=up / magenta=down the right mnemonic, or should it be flipped / surfaced in the UI hint?
-3. **Fade ramp.** Should slider moves apply instantly, or interpolate over a few ms to avoid zipper noise on coarse 7-bit CC values? Probably interpolate; LiSP's existing volume-fade machinery may already handle this.
-4. **Multi-page interaction.** When the user switches Cart Layout pages, the selected row stays the same (row index is global) but the cues under it change — sliders go back to inactive on page change, same as row change.
-5. ~~**`AudioPan` availability on MediaCues.**~~ **Resolved 2026-05-21:** not in the default pipeline → unavailable until the user adds it. Plugin now warns (status bar + log) when a row enters pan mode with no `AudioPan` present anywhere in it.
-6. **Pan-mode visual distinction on pads.** While a row is in pan mode, should the pads themselves indicate the mode somehow (e.g. a subtle hue tint, or a dim secondary color), or is the Scene Launch blink enough? Leaning "Scene Launch blink is enough" to avoid fighting the existing per-cue color palette — but worth a hardware test.
-7. **Center-detent tolerance value.** ±1 CC around the center (`64`) is a starting point; may need widening to ±2 or ±3 if operators find it too easy to miss. Empirical.
-8. ~~**Scene Launch LED brightness support (keylight).**~~ **Resolved 2026-05-21: no.** Hardware ignores the brightness nibble on these buttons. Keylight removed; scene LEDs are state-only (off / solid / blink) on channel 0.
+1. ~~**Hunting indicator encoding** (hue shift vs. behavior nibble).~~ **Resolved 2026-05-21:** direction-by-color (white armed / blue push-up / magenta pull-down, slow pulse) — see the soft-takeover section above. Remaining sub-question for hardware: are blue/magenta legible enough at a glance in a dark booth, and is blue=up / magenta=down the right mnemonic, or should it be flipped / surfaced in the UI hint?
+2. **Fade ramp.** Should slider moves apply instantly, or interpolate over a few ms to avoid zipper noise on coarse 7-bit CC values? Probably interpolate; LiSP's existing volume-fade machinery may already handle this.
+3. **Multi-page interaction.** When the user switches Cart Layout pages, the selected row stays the same (row index is global) but the cues under it change — sliders go back to inactive on page change, same as row change.
+4. **Pan-mode visual distinction on pads.** While a row is in pan mode, should the pads themselves indicate the mode somehow (e.g. a subtle hue tint, or a dim secondary color), or is the Scene Launch blink enough? Leaning "Scene Launch blink is enough" to avoid fighting the existing per-cue color palette — but worth a hardware test.
+5. **Center-detent tolerance value.** ±1 CC around the center (`64`) is a starting point; may need widening to ±2 or ±3 if operators find it too easy to miss. Empirical.

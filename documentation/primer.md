@@ -1,8 +1,5 @@
 # LiSP × APC Mini mk2 Plugin — Project Primer
 
-> Context document for picking up this project in VS Code with Claude Code.
-> All decisions below were made in a planning conversation; this primer captures the rationale, technical reference, and ordered next steps so we can move straight into implementation.
-
 ## Project goal
 
 Build a **Linux Show Player (LiSP)** plugin that gives plug-and-play integration with the **Akai APC Mini mk2** controller for the **Cart Layout**, with **zero per-cue MIDI configuration**.
@@ -159,7 +156,6 @@ Things to check:
 
 If anything close exists (e.g. a Launchpad or generic grid-controller plugin), study it — it likely solves 60–80% of the same problem and the architecture lessons are reusable.
 
-**Deliverable:** short markdown notes file in the repo (`research/existing-plugins.md`) listing what was found, what's reusable, what's not, and any decisions made (e.g. fork existing X vs. start fresh).
 
 ### Step 2 — Study Cart Layout source
 
