@@ -22,7 +22,11 @@
       "Bash(git check-ignore *)",
       "Bash(git rm *)",
       "Bash(cat ~/.config/LinuxShowPlayer/0.6/apc_mini_cart.json 2>&1)",
-      "Read(//home/niels/.config/LinuxShowPlayer/0.6/**)"
+      "Read(//home/niels/.config/LinuxShowPlayer/0.6/**)",
+      "WebFetch(domain:packages.debian.org)",
+      "Bash(gh search *)",
+      "PowerShell(gh search code 'from PyQt5' --repo FrancescoCeruti/linux-show-player --limit 50 --json path,textMatches)",
+      "WebFetch(domain:grep.app)"
     ]
   }
 }

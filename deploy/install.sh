@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# Idempotent installer/updater for LiSP + apc_mini_cart plugin on a
-# Debian-family Linux box. Safe to re-run as the update mechanism.
+# Idempotent installer/updater for LiSP + apc_mini_cart plugin on
+# Raspberry Pi OS Trixie (64-bit). Safe to re-run as the update mechanism.
+#
+# Target: Raspberry Pi OS Trixie (Debian 13) on arm64. Vanilla Debian Trixie
+# on other architectures will also work — the apt package names are identical.
+# Bookworm and older are NOT supported (different librtmidi soversion, older
+# python3-pyqt5, and on Bookworm python3 < 3.10 in places).
 #
 # Usage:
 #   bash install.sh
@@ -59,20 +64,30 @@ clone_or_pull() {
 
 step "Preflight"
 
-if ! [[ -f /etc/os-release ]] || ! grep -qE 'ID(_LIKE)?=.*(debian|ubuntu)' /etc/os-release; then
-    c_yellow "Not a Debian/Ubuntu/Mint system. Continuing, but apt step will be skipped."
-    SKIP_APT=1
+# Target Debian Trixie (Raspberry Pi OS Trixie). Older releases have a
+# different librtmidi soversion (librtmidi6 instead of librtmidi7) and may
+# not ship python3-pyqt5 5.15.11, so the apt step would either fail or
+# install a wrong-version PyQt5 that doesn't satisfy LiSP's pin.
+if [[ ! -f /etc/os-release ]]; then
+    die "Cannot detect OS — /etc/os-release missing"
+fi
+# shellcheck disable=SC1091
+. /etc/os-release
+if [[ "${VERSION_CODENAME:-}" != "trixie" ]]; then
+    die "This installer targets Debian Trixie (Raspberry Pi OS Trixie). Detected: ${PRETTY_NAME:-unknown}"
+fi
+if [[ -f /etc/rpi-issue ]]; then
+    echo "  Raspberry Pi OS Trixie detected"
+else
+    c_yellow "  Trixie detected but not Raspberry Pi OS — apt list is tuned for RPi but should still work on plain Debian."
 fi
 
 require_cmd git
 require_cmd curl
 
-PY_VER=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || echo "0.0")
-PY_MAJOR=${PY_VER%.*}; PY_MINOR=${PY_VER#*.}
-if (( PY_MAJOR < 3 || (PY_MAJOR == 3 && PY_MINOR < 10) )); then
-    die "python3 >= 3.10 required (found ${PY_VER}). Install python3 from your distro first."
-fi
-echo "  python3 ${PY_VER} OK"
+# Trixie ships python3 3.13 by default, so we don't gate on the version here —
+# if python3 is missing entirely something is very wrong with the install.
+require_cmd python3
 
 # --- system packages -------------------------------------------------------
 
@@ -80,13 +95,26 @@ step "System packages"
 
 APT_PACKAGES=(
     python3 python3-dev python3-poetry
+    # PyQt5 from apt — on Trixie this is exactly 5.15.11, which satisfies
+    # LiSP's `^5.15.2` pin in pyproject.toml. We install it via apt (instead
+    # of letting poetry pull it from PyPI) because there is no aarch64 wheel
+    # for PyQt5 on PyPI, so on a Raspberry Pi the alternative is a 20–30 min
+    # source build of PyQt5+sip against Qt5 dev headers. The companion
+    # `poetry config virtualenvs.options.system-site-packages true --local`
+    # call below makes the LiSP venv actually see this system package.
+    # qtsvg is a separate Debian sub-package and is needed by LiSP for icons.
+    python3-pyqt5
+    python3-pyqt5.qtsvg
     gstreamer1.0-plugins-good
     gstreamer1.0-plugins-ugly
     gstreamer1.0-plugins-bad
     gstreamer1.0-libav
     libasound2 libasound2-dev
     libgirepository1.0-dev libcairo2-dev
-    librtmidi6
+    # rtmidi runtime — Trixie bumped the soname from 6 to 7 (upstream still
+    # rtmidi 6.0.0; Debian just changed the package name). On Bookworm this
+    # would be librtmidi6.
+    librtmidi7
     git
 )
 
@@ -115,6 +143,15 @@ echo "  $(poetry --version)"
 
 step "Linux Show Player (${LISP_REF})"
 clone_or_pull "${LISP_REPO}" "${LISP_REF}" "${LISP_DIR}"
+
+# Tell poetry's venv to inherit Debian's system site-packages so the apt-
+# installed python3-pyqt5 is visible inside the LiSP venv. Without this the
+# venv is fully isolated, poetry doesn't see PyQt5 5.15.11 from apt, and
+# falls back to building PyQt5 from source (no aarch64 wheel on PyPI; see
+# the apt list comment above). --local scopes the setting to LiSP's repo
+# via a poetry.toml file there — your global poetry config is untouched.
+echo "  configuring poetry venv to inherit system site-packages (system PyQt5)"
+( cd "${LISP_DIR}" && poetry config virtualenvs.options.system-site-packages true --local )
 
 echo "  resolving Python deps (poetry install)"
 ( cd "${LISP_DIR}" && poetry install --quiet )
