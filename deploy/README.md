@@ -63,6 +63,24 @@ lisp-apc           # from a terminal
 
 Or pick **Linux Show Player (APC)** from your application menu.
 
+## Boot straight into LiSP (show machine)
+
+For an unattended show box, run the installer with both flags:
+
+```bash
+AUTOSTART=1 AUTOLOGIN=1 bash ~/lisp/apc-mini-cart/deploy/install.sh
+```
+
+- `AUTOLOGIN=1` enables desktop autologin (via `raspi-config`), so the Pi boots into the desktop without a password.
+- `AUTOSTART=1` makes LiSP launch when that desktop session starts. LiSP opens **maximized** on its own, so there's nothing extra to configure for that.
+
+**How the autostart works (and why it's done this way).** RPi OS Trixie's desktop is **labwc** (Wayland).
+
+1. labwc does **not** read `~/.config/autostart/*.desktop` (the freedesktop XDG autostart dir) — the `lxsession-xdg-autostart` line in `/etc/xdg/labwc/autostart` is vestigial under labwc, so a `.desktop` autostart entry silently never fires.
+2. This labwc runs **both** `/etc/xdg/labwc/autostart` *and* the user's `~/.config/labwc/autostart` (not "first file wins"). So the user file must contain **only** the LiSP launch line — copying the system lines (`wf-panel-pi`, `pcmanfm-pi`, `kanshi`) into it gives you a duplicate taskbar.
+
+So `AUTOSTART=1` just appends one line — `~/.local/bin/lisp-apc &` — to `~/.config/labwc/autostart` (idempotently; any existing content is left alone). It assumes the labwc desktop; on a different compositor the file is ignored and LiSP simply won't autostart (nothing breaks). To undo it, delete that line from `~/.config/labwc/autostart`.
+
 ## After install, in LiSP
 
 1. Open **Preferences → MIDI** and set both **Input device** and **Output device** to `APC mini mk2 Control` — *not* `APC mini mk2 Notes`. Wrong port = the plugin appears dead.
@@ -80,6 +98,8 @@ The script reads these env vars if you want to deviate from the defaults:
 | `PLUGIN_DIR` | `~/lisp/apc-mini-cart`                                             |
 | `PLUGIN_REF` | `main`                                                             |
 | `SKIP_APT`   | unset — set to `1` if you've already installed the system packages |
+| `AUTOSTART`  | unset — set to `1` to launch LiSP automatically on login (see below) |
+| `AUTOLOGIN`  | unset — set to `1` to boot straight to the desktop with no password |
 
 Example: pin to a specific plugin release tag:
 

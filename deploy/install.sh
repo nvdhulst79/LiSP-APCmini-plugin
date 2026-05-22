@@ -18,6 +18,8 @@
 #   PLUGIN_REPO plugin git remote                          (default: GitHub)
 #   PLUGIN_REF  branch / tag to track                      (default: main)
 #   SKIP_APT=1  skip system-package install (already done) (default: unset)
+#   AUTOSTART=1 launch LiSP on login via labwc autostart   (default: unset)
+#   AUTOLOGIN=1 boot straight to the desktop, no password  (default: unset)
 
 set -euo pipefail
 
@@ -27,6 +29,9 @@ LISP_REF="${LISP_REF:-develop}"
 PLUGIN_DIR="${PLUGIN_DIR:-$HOME/lisp/apc-mini-cart}"
 PLUGIN_REPO="${PLUGIN_REPO:-https://github.com/nvdhulst79/LiSP-APCmini-plugin.git}"
 PLUGIN_REF="${PLUGIN_REF:-main}"
+
+AUTOSTART="${AUTOSTART:-0}"
+AUTOLOGIN="${AUTOLOGIN:-0}"
 
 # Keep poetry non-interactive AND out of the system keyring. Running the
 # installer from the Pi's desktop session (especially with desktop autologin,
@@ -276,6 +281,48 @@ if ! echo "${PATH}" | tr ':' '\n' | grep -qx "${HOME}/.local/bin"; then
     c_yellow "  NOTE: ${HOME}/.local/bin is not on PATH. Add it to your shell rc, or run via the desktop entry."
 fi
 
+# --- autostart (optional) --------------------------------------------------
+
+step "Autostart"
+
+LABWC_AUTOSTART="${HOME}/.config/labwc/autostart"
+
+if [[ "${AUTOSTART}" == "1" ]]; then
+    # RPi OS Trixie's desktop compositor is labwc (Wayland). Two things we
+    # confirmed on real hardware:
+    #   * labwc does NOT honour ~/.config/autostart/*.desktop here — the
+    #     lxsession-xdg-autostart line in /etc/xdg/labwc/autostart is vestigial
+    #     under labwc, so an XDG autostart entry never fires.
+    #   * this labwc runs BOTH /etc/xdg/labwc/autostart AND the user's
+    #     ~/.config/labwc/autostart. So the user file must contain ONLY our
+    #     launch line — copying the system lines (wf-panel-pi, pcmanfm-pi,
+    #     kanshi) into it spawns a second panel/taskbar.
+    # Hence: append just the launcher line, once, leaving any pre-existing user
+    # autostart content untouched.
+    mkdir -p "$(dirname "${LABWC_AUTOSTART}")"
+    touch "${LABWC_AUTOSTART}"
+    if grep -qF "${LAUNCHER_PATH}" "${LABWC_AUTOSTART}"; then
+        echo "  labwc autostart already launches LiSP"
+    else
+        echo "${LAUNCHER_PATH} &" >> "${LABWC_AUTOSTART}"
+        echo "  added LiSP launch to ${LABWC_AUTOSTART}"
+    fi
+    c_yellow "  (Assumes the labwc desktop. On a different compositor this file is"
+    c_yellow "   ignored — LiSP just won't autostart; nothing else breaks.)"
+else
+    echo "  skipped (set AUTOSTART=1 to launch LiSP on login)"
+fi
+
+if [[ "${AUTOLOGIN}" == "1" ]]; then
+    if command -v raspi-config >/dev/null 2>&1; then
+        echo "  enabling desktop autologin (raspi-config)"
+        sudo raspi-config nonint do_boot_behaviour B4 \
+            || c_yellow "  autologin setup failed — enable it manually via raspi-config"
+    else
+        c_yellow "  AUTOLOGIN=1 set but raspi-config not found — skipping"
+    fi
+fi
+
 # --- done ------------------------------------------------------------------
 
 step "Done"
@@ -283,6 +330,7 @@ c_green "Install/update succeeded."
 echo ""
 echo "Launch:    lisp-apc           (or from the application menu)"
 echo "Update:    re-run this script (git pull + poetry install)"
+echo "Autostart: re-run with AUTOSTART=1 (launch on login) / AUTOLOGIN=1 (boot to desktop)"
 echo "Logs:      ~/.local/share/LinuxShowPlayer/0.6/logs/lisp.log"
 echo ""
 echo "Reminder: in LiSP, set MIDI input/output to 'APC mini mk2 Control'"
