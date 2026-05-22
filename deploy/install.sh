@@ -11,20 +11,20 @@
 #   bash install.sh
 #
 # Override-able via env vars:
-#   LISP_DIR    install dir for Linux Show Player          (default: ~/dev/linux-show-player)
+#   LISP_DIR    install dir for Linux Show Player          (default: ~/lisp/linux-show-player)
 #   LISP_REPO   LiSP git remote                            (default: upstream)
 #   LISP_REF    branch / tag to track                      (default: develop)
-#   PLUGIN_DIR  install dir for this plugin                (default: ~/dev/lisp-apc-mini-cart)
+#   PLUGIN_DIR  install dir for this plugin                (default: ~/lisp/apc-mini-cart)
 #   PLUGIN_REPO plugin git remote                          (default: GitHub)
 #   PLUGIN_REF  branch / tag to track                      (default: main)
 #   SKIP_APT=1  skip system-package install (already done) (default: unset)
 
 set -euo pipefail
 
-LISP_DIR="${LISP_DIR:-$HOME/dev/linux-show-player}"
+LISP_DIR="${LISP_DIR:-$HOME/lisp/linux-show-player}"
 LISP_REPO="${LISP_REPO:-https://github.com/FrancescoCeruti/linux-show-player.git}"
 LISP_REF="${LISP_REF:-develop}"
-PLUGIN_DIR="${PLUGIN_DIR:-$HOME/dev/lisp-apc-mini-cart}"
+PLUGIN_DIR="${PLUGIN_DIR:-$HOME/lisp/apc-mini-cart}"
 PLUGIN_REPO="${PLUGIN_REPO:-https://github.com/nvdhulst79/LiSP-APCmini-plugin.git}"
 PLUGIN_REF="${PLUGIN_REF:-main}"
 

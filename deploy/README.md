@@ -7,17 +7,17 @@ One-shot installer for a fresh **Raspberry Pi OS Trixie (64-bit)** show machine.
 ## First install
 
 ```bash
-git clone https://github.com/nvdhulst79/LiSP-APCmini-plugin.git ~/dev/lisp-apc-mini-cart
-bash ~/dev/lisp-apc-mini-cart/deploy/install.sh
+git clone https://github.com/nvdhulst79/LiSP-APCmini-plugin.git ~/lisp/apc-mini-cart
+bash ~/lisp/apc-mini-cart/deploy/install.sh
 ```
 
 What it does (top to bottom, idempotent):
 
 1. Verifies you're on Trixie (refuses to run otherwise; older releases would fail at the apt step anyway).
 2. `apt install` of LiSP's system deps: gstreamer, asound, gobject-introspection, **librtmidi7**, **python3-pyqt5 + python3-pyqt5.qtsvg**, poetry. See *Why these packages* below.
-3. Clones [linux-show-player](https://github.com/FrancescoCeruti/linux-show-player) (`develop` branch) to `~/dev/linux-show-player`, configures its poetry venv to inherit system site-packages (so the apt-installed PyQt5 is visible), then runs `poetry install`.
-4. Clones this plugin repo to `~/dev/lisp-apc-mini-cart`.
-5. Symlinks the clone `~/dev/lisp-apc-mini-cart` into `~/dev/linux-show-player/lisp/plugins/apc_mini_cart` (the repo root *is* the plugin package).
+3. Clones [linux-show-player](https://github.com/FrancescoCeruti/linux-show-player) (`develop` branch) to `~/lisp/linux-show-player`, configures its poetry venv to inherit system site-packages (so the apt-installed PyQt5 is visible), then runs `poetry install`.
+4. Clones this plugin repo to `~/lisp/apc-mini-cart`.
+5. Symlinks the clone `~/lisp/apc-mini-cart` into `~/lisp/linux-show-player/lisp/plugins/apc_mini_cart` (the repo root *is* the plugin package).
 6. Drops a `lisp-apc` launcher into `~/.local/bin/` and a `.desktop` file into `~/.local/share/applications/` so the app shows up in the menu.
 
 ## Why these packages (and the system-site-packages trick)
@@ -37,7 +37,7 @@ If LiSP later starts importing a Qt5 module that isn't in `python3-pyqt5` or `py
 ## Updating
 
 ```bash
-bash ~/dev/lisp-apc-mini-cart/deploy/install.sh
+bash ~/lisp/apc-mini-cart/deploy/install.sh
 ```
 
 Same script. It detects existing clones and `git pull`s them, re-runs `poetry install` (no-op if nothing changed), and refreshes the symlink/launcher.
@@ -62,16 +62,16 @@ The script reads these env vars if you want to deviate from the defaults:
 
 | Var          | Default                                                            |
 |--------------|--------------------------------------------------------------------|
-| `LISP_DIR`   | `~/dev/linux-show-player`                                          |
+| `LISP_DIR`   | `~/lisp/linux-show-player`                                         |
 | `LISP_REF`   | `develop`                                                          |
-| `PLUGIN_DIR` | `~/dev/lisp-apc-mini-cart`                                         |
+| `PLUGIN_DIR` | `~/lisp/apc-mini-cart`                                             |
 | `PLUGIN_REF` | `main`                                                             |
 | `SKIP_APT`   | unset — set to `1` if you've already installed the system packages |
 
 Example: pin to a specific plugin release tag:
 
 ```bash
-PLUGIN_REF=v0.2.0 bash ~/dev/lisp-apc-mini-cart/deploy/install.sh
+PLUGIN_REF=v0.2.0 bash ~/lisp/apc-mini-cart/deploy/install.sh
 ```
 
 ## Uninstall
@@ -79,8 +79,8 @@ PLUGIN_REF=v0.2.0 bash ~/dev/lisp-apc-mini-cart/deploy/install.sh
 ```bash
 rm "${HOME}/.local/bin/lisp-apc"
 rm "${HOME}/.local/share/applications/lisp-apc.desktop"
-rm "${HOME}/dev/linux-show-player/lisp/plugins/apc_mini_cart"   # the symlink
-rm -rf "${HOME}/dev/lisp-apc-mini-cart" "${HOME}/dev/linux-show-player"  # optional
+rm "${HOME}/lisp/linux-show-player/lisp/plugins/apc_mini_cart"   # the symlink
+rm -rf "${HOME}/lisp/apc-mini-cart" "${HOME}/lisp/linux-show-player"  # optional
 ```
 
 System packages (apt) are left in place — remove manually if you want.

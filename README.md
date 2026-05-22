@@ -46,8 +46,8 @@ LiSP** after installing.
 ### Into an existing from-source LiSP
 
 ```bash
-git clone https://github.com/nvdhulst79/LiSP-APCmini-plugin.git ~/dev/lisp-apc-mini-cart
-ln -s ~/dev/lisp-apc-mini-cart \
+git clone https://github.com/nvdhulst79/LiSP-APCmini-plugin.git ~/lisp/apc-mini-cart
+ln -s ~/lisp/apc-mini-cart \
       ~/path/to/linux-show-player/lisp/plugins/apc_mini_cart
 ```
 
@@ -61,8 +61,8 @@ installer that also builds LiSP itself and wires everything together. It doubles
 updater (re-run it to `git pull` + reinstall):
 
 ```bash
-git clone https://github.com/nvdhulst79/LiSP-APCmini-plugin.git ~/dev/lisp-apc-mini-cart
-bash ~/dev/lisp-apc-mini-cart/deploy/install.sh
+git clone https://github.com/nvdhulst79/LiSP-APCmini-plugin.git ~/lisp/apc-mini-cart
+bash ~/lisp/apc-mini-cart/deploy/install.sh
 ```
 
 See [deploy/README.md](deploy/README.md) for what it does, supported targets, and the
