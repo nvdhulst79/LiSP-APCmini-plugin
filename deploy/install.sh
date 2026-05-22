@@ -28,6 +28,10 @@ PLUGIN_DIR="${PLUGIN_DIR:-$HOME/lisp/apc-mini-cart}"
 PLUGIN_REPO="${PLUGIN_REPO:-https://github.com/nvdhulst79/LiSP-APCmini-plugin.git}"
 PLUGIN_REF="${PLUGIN_REF:-main}"
 
+# Never let poetry block on an interactive prompt (keyring, etc.) on a
+# headless show machine — fail fast instead.
+export POETRY_NO_INTERACTION=1
+
 PLUGIN_MODULE="apc_mini_cart"
 SYMLINK_PATH="${LISP_DIR}/lisp/plugins/${PLUGIN_MODULE}"
 
@@ -51,8 +55,15 @@ clone_or_pull() {
     if [[ -d "${dir}/.git" ]]; then
         echo "  updating ${dir}"
         git -C "${dir}" fetch --quiet origin "${ref}"
-        git -C "${dir}" checkout --quiet "${ref}"
-        git -C "${dir}" pull --quiet --ff-only origin "${ref}"
+        # Hard-reset to the remote tip rather than a ff-only pull. These are
+        # managed deployment checkouts, not dev trees, and the LiSP clone gets
+        # a local patch below (PyQt5 pins stripped from pyproject.toml +
+        # poetry.lock re-locked). A ff-only pull would refuse to overwrite that
+        # local change; reset --hard guarantees a pristine tree so the patch
+        # re-applies cleanly on every update.
+        git -C "${dir}" checkout --quiet "${ref}" 2>/dev/null \
+            || git -C "${dir}" checkout --quiet -b "${ref}" --track "origin/${ref}"
+        git -C "${dir}" reset --quiet --hard "origin/${ref}"
     else
         echo "  cloning ${repo} -> ${dir}"
         mkdir -p "$(dirname "${dir}")"
@@ -95,22 +106,39 @@ step "System packages"
 
 APT_PACKAGES=(
     python3 python3-dev python3-poetry
-    # PyQt5 from apt — on Trixie this is exactly 5.15.11, which satisfies
-    # LiSP's `^5.15.2` pin in pyproject.toml. We install it via apt (instead
-    # of letting poetry pull it from PyPI) because there is no aarch64 wheel
-    # for PyQt5 on PyPI, so on a Raspberry Pi the alternative is a 20–30 min
-    # source build of PyQt5+sip against Qt5 dev headers. The companion
-    # `poetry config virtualenvs.options.system-site-packages true --local`
-    # call below makes the LiSP venv actually see this system package.
-    # qtsvg is a separate Debian sub-package and is needed by LiSP for icons.
+    # C/C++ toolchain + pkg-config. PyGObject, pycairo and python-rtmidi have
+    # no aarch64 wheels on PyPI, so poetry builds them from source on the Pi.
+    # (meson/ninja are provided by pip's build isolation, so they're not needed
+    # as system packages — but the compiler and pkg-config must be.)
+    build-essential pkg-config
+    # PyQt5 from apt — on Trixie this is 5.15.11, which satisfies LiSP's
+    # `^5.15.2` pin. There is NO aarch64 wheel for `pyqt5` or `pyqt5-qt5` on
+    # PyPI (and `pyqt5-qt5` is prebuilt Qt with no buildable sdist), so letting
+    # poetry install them hard-fails on a Pi. The LiSP-repo step below strips
+    # those two pins from pyproject and re-locks; system-site-packages (also
+    # set there) makes this apt PyQt5 visible inside the venv, and it ships the
+    # PyQt5.sip module too. qtsvg is a separate sub-package LiSP needs for icons.
     python3-pyqt5
     python3-pyqt5.qtsvg
     gstreamer1.0-plugins-good
     gstreamer1.0-plugins-ugly
     gstreamer1.0-plugins-bad
     gstreamer1.0-libav
+    # GObject-introspection typelibs. PyGObject is only the bridge; the actual
+    # `gi.repository` namespaces load from these .typelib files at runtime.
+    # Without gir1.2-gstreamer-1.0 / -gst-plugins-base-1.0, LiSP's gst_backend
+    # can't `import Gst`, throws on load, and silently disables itself (no
+    # audio — the GUI still starts because that's PyQt5, not gi). These are NOT
+    # pulled in by the gstreamer1.0-plugins-* packages above.
+    gir1.2-glib-2.0
+    gir1.2-gstreamer-1.0
+    gir1.2-gst-plugins-base-1.0
     libasound2 libasound2-dev
-    libgirepository1.0-dev libcairo2-dev
+    # PyGObject build dep. On Trixie, PyGObject 3.50+ uses meson and requires
+    # `girepository-2.0` (girepository was merged into glib upstream), provided
+    # by libgirepository-2.0-dev — NOT the old libgirepository1.0-dev, which no
+    # longer satisfies the build. libcairo2-dev is for the pycairo build.
+    libgirepository-2.0-dev libcairo2-dev
     # rtmidi runtime — Trixie bumped the soname from 6 to 7 (upstream still
     # rtmidi 6.0.0; Debian just changed the package name). On Bookworm this
     # would be librtmidi6.
@@ -145,16 +173,40 @@ step "Linux Show Player (${LISP_REF})"
 clone_or_pull "${LISP_REPO}" "${LISP_REF}" "${LISP_DIR}"
 
 # Tell poetry's venv to inherit Debian's system site-packages so the apt-
-# installed python3-pyqt5 is visible inside the LiSP venv. Without this the
-# venv is fully isolated, poetry doesn't see PyQt5 5.15.11 from apt, and
-# falls back to building PyQt5 from source (no aarch64 wheel on PyPI; see
-# the apt list comment above). --local scopes the setting to LiSP's repo
-# via a poetry.toml file there — your global poetry config is untouched.
+# installed python3-pyqt5 is visible inside the LiSP venv. Must be set BEFORE
+# the venv is created — poetry only honours it at venv-creation time. --local
+# scopes the setting to LiSP's repo via a poetry.toml file there, leaving your
+# global poetry config untouched.
 echo "  configuring poetry venv to inherit system site-packages (system PyQt5)"
 ( cd "${LISP_DIR}" && poetry config virtualenvs.options.system-site-packages true --local )
 
+# Strip the PyQt5 pins and re-lock. PyQt5 has NO aarch64 wheels on PyPI —
+# neither `pyqt5` nor `pyqt5-qt5` (the latter is prebuilt Qt with no buildable
+# sdist) — so on a Pi `poetry install` can never satisfy them and aborts.
+# system-site-packages alone is not enough: it makes the apt PyQt5 importable
+# at runtime, but poetry still tries to fetch the locked PyPI PyQt5 packages.
+# Removing the two top-level pins drops pyqt5 / pyqt5-qt5 / pyqt5-sip from the
+# lock; the apt python3-pyqt5 (with its bundled PyQt5.sip) then provides PyQt5
+# via system-site-packages. Harmless on x86_64 (those wheels exist there) and
+# keeps both arches on one code path. clone_or_pull reset the tree to pristine
+# above, so this edit is freshly re-applied on every run.
+LISP_PYPROJECT="${LISP_DIR}/pyproject.toml"
+if grep -qE '^pyqt5(-qt5)? = ' "${LISP_PYPROJECT}"; then
+    echo "  removing PyQt5 PyPI pins (provided by apt python3-pyqt5) and re-locking"
+    sed -i -E '/^pyqt5(-qt5)? = /d' "${LISP_PYPROJECT}"
+    # `--no-update` keeps every other pin as-is (poetry 1.x). On poetry 2.x the
+    # flag was removed and plain `poetry lock` already preserves versions, so
+    # fall back to it.
+    ( cd "${LISP_DIR}" && poetry lock --no-update ) \
+        || ( cd "${LISP_DIR}" && poetry lock ) \
+        || die "poetry lock failed after stripping PyQt5 pins"
+fi
+
+# No --quiet: a silent failure here (a missing system build dep, an
+# unresolvable wheel) is near-impossible to diagnose on a remote show machine.
+# Let poetry's output through so the failing package is visible.
 echo "  resolving Python deps (poetry install)"
-( cd "${LISP_DIR}" && poetry install --quiet )
+( cd "${LISP_DIR}" && poetry install )
 
 # --- plugin repo -----------------------------------------------------------
 
