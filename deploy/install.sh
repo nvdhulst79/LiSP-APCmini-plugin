@@ -28,9 +28,14 @@ PLUGIN_DIR="${PLUGIN_DIR:-$HOME/lisp/apc-mini-cart}"
 PLUGIN_REPO="${PLUGIN_REPO:-https://github.com/nvdhulst79/LiSP-APCmini-plugin.git}"
 PLUGIN_REF="${PLUGIN_REF:-main}"
 
-# Never let poetry block on an interactive prompt (keyring, etc.) on a
-# headless show machine — fail fast instead.
+# Keep poetry non-interactive AND out of the system keyring. Running the
+# installer from the Pi's desktop session (especially with desktop autologin,
+# where the login keyring is never unlocked) otherwise makes poetry's keyring
+# integration pop a blocking "unlock keyring" dialog mid-install.
+# POETRY_NO_INTERACTION alone does NOT prevent that — the null keyring backend
+# does. We only ever hit public PyPI, so no stored credentials are needed.
 export POETRY_NO_INTERACTION=1
+export PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring
 
 PLUGIN_MODULE="apc_mini_cart"
 SYMLINK_PATH="${LISP_DIR}/lisp/plugins/${PLUGIN_MODULE}"
@@ -194,11 +199,15 @@ LISP_PYPROJECT="${LISP_DIR}/pyproject.toml"
 if grep -qE '^pyqt5(-qt5)? = ' "${LISP_PYPROJECT}"; then
     echo "  removing PyQt5 PyPI pins (provided by apt python3-pyqt5) and re-locking"
     sed -i -E '/^pyqt5(-qt5)? = /d' "${LISP_PYPROJECT}"
-    # `--no-update` keeps every other pin as-is (poetry 1.x). On poetry 2.x the
-    # flag was removed and plain `poetry lock` already preserves versions, so
-    # fall back to it.
-    ( cd "${LISP_DIR}" && poetry lock --no-update ) \
-        || ( cd "${LISP_DIR}" && poetry lock ) \
+    # Re-lock, preserving every other pin. poetry 1.x needs `--no-update` for
+    # that; poetry 2.x removed the flag and preserves versions by default.
+    # Probe the help text for the flag so we run the right command instead of
+    # emitting a confusing 'The option "--no-update" does not exist' error.
+    LOCK_CMD=(poetry lock)
+    if ( cd "${LISP_DIR}" && poetry lock --help 2>/dev/null | grep -q -- '--no-update' ); then
+        LOCK_CMD=(poetry lock --no-update)
+    fi
+    ( cd "${LISP_DIR}" && "${LOCK_CMD[@]}" ) \
         || die "poetry lock failed after stripping PyQt5 pins"
 fi
 
