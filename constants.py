@@ -42,6 +42,40 @@ APC_SCENE_NOTES = range(0x70, 0x78)
 # Faders 1-8 send CC 0x30..0x37; master at 0x38 is intentionally unmapped.
 APC_FADER_CCS = range(0x30, 0x38)
 
+# Track Buttons (the bottom row of eight, below the grid) send Note 0x64..0x6B
+# on Ch 0. On the mk2 they are labelled, left to right:
+#   Volume, Pan, Send, Device, Up, Down, Left, Right
+# Their LEDs are single-colour red, addressed like the Scene Launch row:
+# 90 NN VV with VV 0=off / 1=on / 2=blink (no brightness control).
+APC_TRACK_NOTES = range(0x64, 0x6C)
+
+# The two buttons that make up the "save + power off" chord.
+TRACK_DEVICE = 0x67
+TRACK_DOWN = 0x69
+
+
+# ---------------------------------------------------------------------------
+# Shutdown chord
+# ---------------------------------------------------------------------------
+#
+# Holding Device + Down together for SHUTDOWN_HOLD_MS saves the current session
+# (silently — over its existing file, or to a timestamped .lsp in LiSP's
+# last-used folder if it was never saved) and powers the machine off. A
+# two-button chord plus a hold guards against an accidental press ending a show.
+SHUTDOWN_CHORD = frozenset({TRACK_DEVICE, TRACK_DOWN})
+SHUTDOWN_HOLD_MS = 2000
+
+# Default power-off command. `systemctl poweroff` is allowed for the active
+# local seat via logind/polkit on Raspberry Pi OS with no password. Overridable
+# at runtime via the "shutdown.command" config key (string or list).
+SHUTDOWN_COMMAND = ["systemctl", "poweroff"]
+
+# Track Button LED states (single-colour red, no brightness — same convention
+# as the Scene Launch row).
+TRACK_LED_OFF = 0
+TRACK_LED_ON = 1
+TRACK_LED_BLINK = 2
+
 
 # ---------------------------------------------------------------------------
 # LED behavior nibbles

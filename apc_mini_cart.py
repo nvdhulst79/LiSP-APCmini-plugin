@@ -26,6 +26,10 @@ silently disables the plugin (LEDs cleared, MIDI handler detached).
 """
 
 import logging
+import os
+import shlex
+import subprocess
+from datetime import datetime
 from threading import Thread
 
 import mido
@@ -45,6 +49,7 @@ from .constants import (
     APC_FADER_CCS,
     APC_GRID_NOTES,
     APC_SCENE_NOTES,
+    APC_TRACK_NOTES,
     BEHAVIOR_BLINK_SIXTEENTH,
     BEHAVIOR_FULL,
     BEHAVIOR_PULSE_QUARTER,
@@ -66,6 +71,14 @@ from .constants import (
     SCENE_LED_BLINK,
     SCENE_LED_OFF,
     SCENE_LED_ON,
+    SHUTDOWN_CHORD,
+    SHUTDOWN_COMMAND,
+    SHUTDOWN_HOLD_MS,
+    TRACK_DEVICE,
+    TRACK_DOWN,
+    TRACK_LED_BLINK,
+    TRACK_LED_OFF,
+    TRACK_LED_ON,
     TRIGGER_MODE_DEFAULT,
     VOLUME_CC_MAX,
 )
@@ -122,6 +135,12 @@ class ApcMiniCart(Plugin):
         self._current_mode = ROW_MODE_VOLUME
         self._slider_latched = [False] * GRID_COLS
         self._slider_position = [-1] * GRID_COLS
+
+        # Shutdown chord state. Track Buttons report press (note_on) and release
+        # (note_off); _track_held is the set currently down. While the
+        # Device+Down chord is held, _shutdown_timer counts down to power-off.
+        self._track_held = set()
+        self._shutdown_timer = None
 
         # Per-cue properties (None = "use the plugin-wide default").
         # Registered on the class so they serialize with the session file.
@@ -200,6 +219,9 @@ class ApcMiniCart(Plugin):
         ):
             signal.disconnect(self._on_model_changed)
 
+        self._disarm_shutdown()
+        self._track_held.clear()
+
         self._midi.input.new_message.disconnect(self._on_midi_message)
         self._clear_all_pads()
         self._clear_scene_leds()
@@ -238,6 +260,14 @@ class ApcMiniCart(Plugin):
                 self._handle_grid_press(note)
             elif note in APC_SCENE_NOTES:
                 self._handle_scene_press(note)
+            elif note in APC_TRACK_NOTES:
+                self._handle_track_press(note)
+        elif message.type == "note_off":
+            # Track Button release. The grid/scene rows only act on key-down, so
+            # note_off matters only for chord tracking. (MIDIInput translates a
+            # vel-0 note_on to note_off, so either release encoding lands here.)
+            if message.note in APC_TRACK_NOTES:
+                self._handle_track_release(message.note)
         elif message.type == "control_change":
             cc = message.control
             if cc in APC_FADER_CCS:
@@ -748,3 +778,109 @@ class ApcMiniCart(Plugin):
             )
         except Exception:
             logger.exception("APC Mini Cart: failed to send Scene Launch LED.")
+
+    # ------------------------------------------------------------------ #
+    # Track Buttons: save + shutdown chord                               #
+    # ------------------------------------------------------------------ #
+
+    def _handle_track_press(self, note):
+        """A Track Button went down — arm the shutdown chord if it's complete."""
+        self._track_held.add(note)
+        if self._shutdown_enabled() and SHUTDOWN_CHORD <= self._track_held:
+            self._arm_shutdown()
+
+    def _handle_track_release(self, note):
+        """A Track Button came up — abort the countdown if the chord broke."""
+        self._track_held.discard(note)
+        if not (SHUTDOWN_CHORD <= self._track_held):
+            self._disarm_shutdown()
+
+    def _shutdown_enabled(self):
+        """True unless the user disabled the chord in Preferences."""
+        return self.Config.get("shutdown.enabled", True)
+
+    def _arm_shutdown(self):
+        """Start the hold-to-confirm countdown and blink the chord buttons.
+
+        Idempotent: a second press while already armed is a no-op (the chord
+        is held, not re-triggered).
+        """
+        if self._shutdown_timer is not None:
+            return
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(self._do_shutdown)
+        timer.start(SHUTDOWN_HOLD_MS)
+        self._shutdown_timer = timer
+        self._send_track_led(TRACK_DEVICE, TRACK_LED_BLINK)
+        self._send_track_led(TRACK_DOWN, TRACK_LED_BLINK)
+        logger.info(
+            "APC Mini Cart: shutdown chord armed — hold %d ms to power off.",
+            SHUTDOWN_HOLD_MS,
+        )
+
+    def _disarm_shutdown(self):
+        """Cancel a pending countdown and clear the chord-button LEDs."""
+        if self._shutdown_timer is None:
+            return
+        self._shutdown_timer.stop()
+        self._shutdown_timer = None
+        self._send_track_led(TRACK_DEVICE, TRACK_LED_OFF)
+        self._send_track_led(TRACK_DOWN, TRACK_LED_OFF)
+        logger.info("APC Mini Cart: shutdown chord released — aborted.")
+
+    def _do_shutdown(self):
+        """Countdown elapsed: save the session, then power off."""
+        self._shutdown_timer = None
+        logger.info("APC Mini Cart: shutdown chord held — saving and powering off.")
+        # Solid-light the chord buttons to confirm the commit.
+        self._send_track_led(TRACK_DEVICE, TRACK_LED_ON)
+        self._send_track_led(TRACK_DOWN, TRACK_LED_ON)
+        self._save_session_silently()
+        self._power_off()
+
+    def _save_session_silently(self):
+        """Save the active session with no dialog.
+
+        Saves over the session's existing file when it has one — the common
+        kiosk case, where the show was loaded from disk/USB, so this writes
+        straight back to that file. A never-saved session is written to a
+        timestamped ``.lsp`` in LiSP's last-used folder (``$HOME`` fallback) so
+        powering off never silently discards work.
+
+        ``save_session.emit`` runs on this (Qt) thread via a direct connection,
+        so the file is fully written before we return and trigger the poweroff.
+        """
+        try:
+            path = self.app.session.session_file
+            if not path:
+                directory = self.app.conf.get(
+                    "session.lastPath", os.getenv("HOME") or "."
+                )
+                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                path = os.path.join(directory, f"autosave-{stamp}.lsp")
+            self.app.window.save_session.emit(path)
+            logger.info("APC Mini Cart: session saved to %s.", path)
+        except Exception:
+            logger.exception("APC Mini Cart: failed to save session before shutdown.")
+
+    def _power_off(self):
+        """Run the configured power-off command, detached from LiSP's process."""
+        command = self.Config.get("shutdown.command", None) or SHUTDOWN_COMMAND
+        if isinstance(command, str):
+            command = shlex.split(command)
+        try:
+            subprocess.Popen(command, start_new_session=True)
+        except Exception:
+            logger.exception("APC Mini Cart: power-off command %r failed.", command)
+
+    def _send_track_led(self, note, velocity):
+        """Send a single Track Button Note-On (velocity = 0 off / 1 on / 2 blink)."""
+        try:
+            self._midi.output.send(
+                mido.Message(
+                    "note_on", channel=APC_CHANNEL, note=note, velocity=velocity,
+                )
+            )
+        except Exception:
+            logger.exception("APC Mini Cart: failed to send Track Button LED.")

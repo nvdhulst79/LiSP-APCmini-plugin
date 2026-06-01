@@ -27,6 +27,7 @@ import logging
 
 from PyQt5.QtCore import Qt, QT_TRANSLATE_NOOP
 from PyQt5.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QGroupBox,
@@ -134,6 +135,7 @@ class ApcMiniCartSettings(SettingsPage):
         self._build_colors_group()
         self._build_behavior_group()
         self._build_brightness_group()
+        self._build_system_group()
         self._build_identify_group()
 
         self.retranslateUi()
@@ -197,6 +199,19 @@ class ApcMiniCartSettings(SettingsPage):
         bform.addRow(self.runningBrightnessLabel, runningRow)
         bform.addRow(self.brightnessHint)
 
+    def _build_system_group(self):
+        """The Device + Down save-and-shutdown chord toggle."""
+        self.systemGroup = QGroupBox(self)
+        self.systemGroup.setLayout(QVBoxLayout())
+        self.layout().addWidget(self.systemGroup)
+
+        self.shutdownCheck = QCheckBox(self.systemGroup)
+        self.systemGroup.layout().addWidget(self.shutdownCheck)
+
+        self.shutdownHint = QLabel(self.systemGroup)
+        self.shutdownHint.setWordWrap(True)
+        self.systemGroup.layout().addWidget(self.shutdownHint)
+
     def _build_identify_group(self):
         """The ``Flash grid`` smoke-test button."""
         self.identifyGroup = QGroupBox(self)
@@ -230,6 +245,17 @@ class ApcMiniCartSettings(SettingsPage):
             "Paused (pulse) and error (blink) use the device's built-in "
             "animations — their brightness is fixed by the hardware.",
         ))
+        self.systemGroup.setTitle(translate("ApcMiniCart", "System"))
+        self.shutdownCheck.setText(translate(
+            "ApcMiniCart", "Hold Device + Down to save and power off"
+        ))
+        self.shutdownHint.setText(translate(
+            "ApcMiniCart",
+            "Holding the bottom-row Device and Down buttons together for ~2 "
+            "seconds saves the current session and shuts the machine down. The "
+            "two buttons blink while held; release either one to abort. "
+            "Power-off uses 'systemctl poweroff'.",
+        ))
         self.identifyGroup.setTitle(translate("ApcMiniCart", "Hardware check"))
         self.identifyButton.setText(translate("ApcMiniCart", "Flash grid"))
         self.identifyHint.setText(translate(
@@ -261,6 +287,9 @@ class ApcMiniCartSettings(SettingsPage):
         self.idleBrightnessValue.setText(BRIGHTNESS_LABELS[self.idleBrightnessSlider.value()])
         self.runningBrightnessValue.setText(BRIGHTNESS_LABELS[self.runningBrightnessSlider.value()])
 
+        shutdown = settings.get("shutdown", {}) if settings else {}
+        self.shutdownCheck.setChecked(shutdown.get("enabled", True))
+
     def getSettings(self):
         """Serialize the page's widgets back into a config dict."""
         return {
@@ -275,6 +304,9 @@ class ApcMiniCartSettings(SettingsPage):
                 "running": self.runningBrightnessSlider.value(),
             },
             "trigger_mode": self.triggerModeCombo.currentData(),
+            "shutdown": {
+                "enabled": self.shutdownCheck.isChecked(),
+            },
         }
 
     # -- actions -----------------------------------------------------------

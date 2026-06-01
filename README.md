@@ -19,9 +19,13 @@ configuration** — the 8×8 pad grid maps directly onto the visible cart page.
   row's cue **volume**; tap the same Scene button again to switch the row to **pan**.
   Soft takeover prevents value jumps — a pad pulses (blue = push up, magenta = pull down)
   until the physical fader catches the stored value.
+- **Save + shut down from the device.** Hold the bottom-row **Device + Down** Track Buttons
+  together for ~2 seconds to silently save the current session and power the machine off —
+  meant for a headless kiosk with no keyboard. The two buttons blink while held; release
+  either one to abort. Can be disabled in Preferences.
 - **Preferences page** (Preferences → APC Mini Cart): default idle/running/paused/error
-  colours, idle/running brightness, default pad-press behaviour, and a "flash grid"
-  identify button.
+  colours, idle/running brightness, default pad-press behaviour, the save-and-shutdown
+  toggle, and a "flash grid" identify button.
 - **Per-cue overrides** (the "APC Mini" tab in a cue's settings): per-cart idle colour and
   trigger mode.
 - **Zero-config activation.** The plugin binds itself whenever a Cart Layout session is
@@ -78,6 +82,26 @@ See [deploy/README.md](deploy/README.md) for what it does, supported targets, an
 4. Populate cart pages; press pads to fire cues. Select a row with a Scene Launch button to
    use the faders.
 
+### Save and shut down (kiosk power-off)
+
+Hold the two bottom-row Track Buttons **Device + Down** together for ~2 seconds. The plugin
+saves the current session, then powers the machine off — no keyboard needed. While you hold
+the chord both buttons blink red as a confirmation countdown; release either button before
+the 2 seconds are up to abort.
+
+The session is saved over its existing file (the usual case — a show loaded from disk or a
+USB stick writes straight back). A session that was never saved is written to LiSP's
+last-used folder as `autosave-<timestamp>.lsp`, so a power-off never discards work.
+
+Power-off uses `systemctl poweroff`, which on Raspberry Pi OS is permitted for the locally
+logged-in user without a password. If your system needs a different command (or a
+passwordless-`sudo` wrapper), set the `shutdown.command` key in the plugin config. The whole
+feature can be turned off in **Preferences → APC Mini Cart → System**.
+
+> The chord only works while a Cart Layout session is open (that's when the plugin is
+> listening to the device). The bottom-row button notes follow the documented mk2 layout
+> (Device, Down); if your unit reports different notes, the constants are easy to adjust.
+
 ## Configuration
 
 | Setting | Where | Notes |
@@ -85,6 +109,7 @@ See [deploy/README.md](deploy/README.md) for what it does, supported targets, an
 | State colours (idle/running/paused/error) | Preferences → APC Mini Cart | Limited palette: White, Red, Yellow, Green, Blue, Magenta (the APC's discrete colour set). |
 | Idle / running brightness | Preferences → APC Mini Cart | 7 discrete steps (10 %–100 %); the APC's solid-brightness levels. Paused/error brightness is fixed by their animation patterns. |
 | Default pad-press behaviour | Preferences → APC Mini Cart | `retrigger` or `toggle`. |
+| Save + shutdown chord | Preferences → APC Mini Cart → System | Enable/disable the Device + Down hold-to-save-and-power-off. Power-off command overridable via the `shutdown.command` config key. |
 | Identify (flash grid) | Preferences → APC Mini Cart | Flashes all pads white for 1 s — a quick "is it talking to the device" smoke test. |
 | Per-cart idle colour | Cue settings → APC Mini tab | "Default" inherits the global colour. |
 | Per-cue trigger mode | Cue settings → APC Mini tab | "Default" inherits the global mode. |
